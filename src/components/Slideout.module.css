@@ -1,0 +1,169 @@
+:root {
+  --so-bg: #ffffff;
+  --so-fg: #0f172a;          /* slate-900 */
+  --so-muted: #64748b;       /* slate-500 */
+  --so-border: #e2e8f0;      /* slate-200 */
+  --so-accent: #4f46e5;      /* indigo-600 */
+  --so-accent-700: #4338ca;  /* indigo-700 */
+  --so-shadow: 0 10px 25px rgba(2, 6, 23, 0.10);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --so-bg: #0b1220;
+    --so-fg: #e5e7eb;        /* zinc-200 */
+    --so-muted: #94a3b8;     /* slate-400 */
+    --so-border: #1f2937;    /* gray-800 */
+    --so-accent: #6366f1;    /* indigo-500 */
+    --so-accent-700: #4f46e5;
+    --so-shadow: 0 10px 25px rgba(0,0,0,0.35);
+  }
+}
+
+/* ------ Overlay ------ */
+.overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(2, 6, 23, 0.45);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 180ms ease;
+  z-index: 9998;
+}
+.overlay.show {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+/* ------ Panel ------ */
+.panel {
+  position: fixed;
+  inset: 0 0 0 auto;
+  width: clamp(320px, 42vw, 560px);
+  background: var(--so-bg);
+  color: var(--so-fg);
+  box-shadow: var(--so-shadow);
+  transform: translateX(100%);
+  transition: transform 220ms ease;
+  z-index: 9999;
+  display: grid;
+  grid-template-rows: auto 1fr;
+}
+.panel.open { transform: translateX(0); }
+
+/* ------ Header ------ */
+.header {
+  position: sticky;
+  top: 0;
+  background: var(--so-bg);
+  border-bottom: 1px solid var(--so-border);
+  padding: 16px 18px;
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: center;
+  gap: 12px;
+}
+.title {
+  font-size: 1.5rem;
+  font-weight: 700;
+  letter-spacing: .2px;
+}
+
+/* Close button */
+.closeBtn {
+  appearance: none;
+  border: 1px solid var(--so-border);
+  background: transparent;
+  color: var(--so-fg);
+  font-size: .9rem;
+  padding: 8px 12px;
+  border-radius: 999px;
+  cursor: pointer;
+  transition: background 120ms ease, border-color 120ms ease;
+}
+.closeBtn:hover { background: rgba(99,102,241,0.08); border-color: var(--so-accent); }
+.closeBtn:focus-visible { outline: 3px solid color-mix(in oklab, var(--so-accent) 45%, transparent); outline-offset: 2px; }
+
+/* ------ Body ------ */
+.body {
+  overflow: auto;
+  padding: 16px;
+}
+
+/* ------ Accordion groups (subject/passion blocks) ------ */
+.group {
+  border: 1px solid var(--so-border);
+  border-radius: 16px;
+  overflow: hidden;
+  margin-bottom: 16px;
+  background: color-mix(in oklab, var(--so-bg) 88%, white);
+}
+.group summary {
+  list-style: none;
+  padding: 12px 16px;
+  font-weight: 600;
+  cursor: pointer;
+  display: flex; align-items: center; justify-content: space-between;
+  border-bottom: 1px solid var(--so-border);
+}
+.group summary::-webkit-details-marker { display: none; }
+.group[open] summary { border-bottom-color: var(--so-border); }
+.groupLabel {
+  font-size: .95rem;
+  color: var(--so-muted);
+}
+
+/* ------ Week row ------ */
+.weekRow {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 14px;
+  border-bottom: 1px dashed var(--so-border);
+}
+.weekRow:last-child { border-bottom: 0; }
+.weekTitle {
+  font-size: .95rem;
+  font-weight: 600;
+  letter-spacing: .2px;
+}
+.weekSubtle {
+  color: var(--so-muted);
+  font-weight: 500;
+}
+
+/* Generate button */
+.genBtn {
+  appearance: none;
+  border: 1px solid var(--so-accent);
+  background: var(--so-accent);
+  color: white;
+  font-weight: 600;
+  font-size: .875rem;
+  padding: 8px 12px;
+  border-radius: 10px;
+  cursor: pointer;
+  transition: transform 80ms ease, background 120ms ease, box-shadow 120ms ease;
+  box-shadow: 0 2px 8px rgba(79,70,229,.18);
+}
+.genBtn:hover   { background: var(--so-accent-700); transform: translateY(-1px); }
+.genBtn:active  { transform: translateY(0); }
+.genBtn:focus-visible { outline: 3px solid color-mix(in oklab, var(--so-accent) 45%, transparent); outline-offset: 2px; }
+
+/* Subtle row hover */
+.weekRow:hover { background: color-mix(in oklab, var(--so-bg) 95%, var(--so-accent) 5%); }
+
+/* ------ Scrollbar polish (WebKit) ------ */
+.body::-webkit-scrollbar { width: 10px; }
+.body::-webkit-scrollbar-thumb {
+  background: color-mix(in oklab, var(--so-fg) 15%, transparent);
+  border-radius: 999px;
+}
+.body::-webkit-scrollbar-track { background: transparent; }
+
+/* ------ Reduced motion ------ */
+@media (prefers-reduced-motion: reduce) {
+  .panel { transition: none; }
+  .overlay { transition: none; }
+}

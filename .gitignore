@@ -1,0 +1,33 @@
+# deps & builds
+node_modules/
+.next/
+out/
+dist/
+
+# logs & OS
+*.log
+.DS_Store
+
+# env
+.env*
+
+# vercel
+.vercel
+
+# TS build info
+*.tsbuildinfo
+next-env.d.ts
+
+# bulky/generated public files
+public/*.mp4
+public/*.pdf
+public/*.docx
+public/*.zip
+public/*.png
+public/*.jpg
+public/*.jpeg
+
+# keep only these specific assets tracked (edit as needed)
+!public/favicon.ico
+!public/aos_logo_v1.png
+!public/AOS_login_page_pic.png
