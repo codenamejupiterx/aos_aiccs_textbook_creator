@@ -109,7 +109,7 @@ export default function GenerateFormCard({ onCreated }: { onCreated?: (id: strin
       </div>
 
       {/* Notes (optional) */}
-      <div>
+      {/* <div>
         <label className="block font-semibold text-white mb-2">Notes (optional)</label>
         <textarea
           rows={3}
@@ -119,7 +119,7 @@ export default function GenerateFormCard({ onCreated }: { onCreated?: (id: strin
           placeholder="Any constraints, reading level, IEP considerations, etc."
         />
       </div>
-
+ */}
       {/* Love list → passionLikes[] */}
       <div>
         <label className="block font-semibold text-white mb-2">List 5–10 things you love</label>

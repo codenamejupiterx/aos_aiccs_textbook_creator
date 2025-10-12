@@ -29,11 +29,19 @@ function downloadBlob(blob: Blob, filename: string) {
   URL.revokeObjectURL(url);
 }
 
-async function generateChapterAndDownload(passionId: string, week: number, title: string) {
-  const url = `/api/passions/${encodeURIComponent(passionId)}/weeks/${week}/chapter?debug=1`;
+// ---- accepts format and passes it to API
+async function generateChapterAndDownload(
+  passionId: string,
+  week: number,
+  title: string,
+  format: "pdf" | "docx" = "pdf"
+) {
+  const url = `/api/passions/${encodeURIComponent(
+    passionId
+  )}/weeks/${week}/chapter?debug=1&format=${format}`;
 
   console.log("🧭 Chapter request URL:", new URL(url, window.location.origin).toString());
-  console.log("📦 Params:", { passionId, week, title });
+  console.log("📦 Params:", { passionId, week, title, format });
 
   const res = await fetch(url, {
     method: "POST",
@@ -47,7 +55,9 @@ async function generateChapterAndDownload(passionId: string, week: number, title
   let json: any = null;
   const isJSON = (res.headers.get("content-type") || "").includes("application/json");
   if (isJSON) {
-    try { json = await res.clone().json(); } catch {}
+    try {
+      json = await res.clone().json();
+    } catch {}
   }
   if (json) console.log("🔎 JSON body (debug):", json);
 
@@ -60,8 +70,8 @@ async function generateChapterAndDownload(passionId: string, week: number, title
   // Success → use server-sent filename if present
   const blob = await res.blob();
   const disp = res.headers.get("Content-Disposition") || "";
-  const m = disp.match(/filename="([^"]+)"/);
-  const filename = m?.[1] || `chapter_week${week}.md`;
+  const m = /filename="([^"]+)"/i.exec(disp);
+  const filename = m?.[1] || `chapter_week${week}.${format}`;
 
   downloadBlob(blob, filename);
 }
@@ -98,6 +108,16 @@ export default function PassionsPanel({
   const [clickMsg, setClickMsg] = useState<string>("");
   const [busyWeek, setBusyWeek] = useState<string | null>(null); // `${passionId}:${week}` while generating
 
+  // format chooser modal state (+ busy flag to show progress inside modal)
+  const [chooser, setChooser] = useState<{
+    open: boolean;
+    passionId?: string;
+    week?: number;
+    title?: string;
+    format: "pdf" | "docx";
+    busy?: boolean;
+  }>({ open: false, format: "pdf", busy: false });
+
   async function loadWeeks(passionId: string) {
     if (weeks[passionId] || loadingWeeks[passionId]) return;
     setLoadingWeeks((m) => ({ ...m, [passionId]: true }));
@@ -118,21 +138,34 @@ export default function PassionsPanel({
     if (!weeks[passionId]) await loadWeeks(passionId);
   }
 
+  // open chooser instead of immediate download
   async function handleWeekClick(passionId: string, w: WeekRow) {
-    const tag = `${passionId}:${w.week}`;
+    setChooser({ open: true, passionId, week: w.week, title: w.title, format: "pdf", busy: false });
+    setClickMsg(""); // hide background toast while modal is up
+  }
+
+  // confirm from modal → generate with chosen format (show status inside modal)
+  async function confirmGenerate() {
+    if (!chooser.passionId || !chooser.week || !chooser.title) return;
+    setChooser((c) => ({ ...c, busy: true })); // show “Generating…” in modal
+
+    const tag = `${chooser.passionId}:${chooser.week}`;
     setBusyWeek(tag);
-    setClickMsg(`Generating chapter for ${passionId} / Week ${w.week}…`);
+
     try {
-      await generateChapterAndDownload(passionId, w.week, w.title);
-      setClickMsg(`Downloaded: ${passionId} / Week ${w.week}`);
+      await generateChapterAndDownload(chooser.passionId, chooser.week, chooser.title, chooser.format);
     } catch (e: any) {
       console.error(e);
-      setClickMsg(`Failed: ${passionId} / Week ${w.week} — ${e?.message || e}`);
-      alert(`Failed to generate chapter: ${e?.message || e}`);
+      alert(`Failed to generate: ${e?.message || e}`);
     } finally {
+      setChooser((c) => ({ ...c, open: false, busy: false }));
       setBusyWeek((v) => (v === tag ? null : v));
-      setTimeout(() => setClickMsg(""), 4000);
     }
+  }
+
+  function closeChooser() {
+    if (chooser.busy) return; // prevent closing while generating
+    setChooser((c) => ({ ...c, open: false }));
   }
 
   // ----- Render the inner content (used by both modes) -----
@@ -151,7 +184,8 @@ export default function PassionsPanel({
 
   const Content = () => (
     <div className={styles.body}>
-      {clickMsg && (
+      {/* only show the background banner when modal is not open */}
+      {!chooser.open && clickMsg && (
         <div className="text-xs text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-md px-2 py-1 mb-2">
           {clickMsg}
         </div>
@@ -164,16 +198,6 @@ export default function PassionsPanel({
           const isOpen = openId === p.id;
           const wks = weeks[p.id];
           const isLoading = !!loadingWeeks[p.id];
-
-          const chapterHref =
-            p.bucket && p.s3?.chapterKey
-              ? `https://s3.console.aws.amazon.com/s3/object/${encodeURIComponent(p.bucket)}?prefix=${encodeURIComponent(p.s3.chapterKey!)}`
-              : null;
-
-          const curriculumHref =
-            p.bucket && p.s3?.curriculumKey
-              ? `https://s3.console.aws.amazon.com/s3/object/${encodeURIComponent(p.bucket)}?prefix=${encodeURIComponent(p.s3.curriculumKey!)}`
-              : null;
 
           return (
             <div key={p.id} className={styles.group}>
@@ -193,32 +217,10 @@ export default function PassionsPanel({
                     }
                     title={p.status}
                   />
-                  <div className="font-medium text-gray-900 truncate">{p.label}</div>
+                  {/* readability tweak */}
+                  <div className="font-medium text-white truncate">{p.label}</div>
                   <span className="ml-2 text-xs text-gray-500">{isOpen ? "▲" : "▼"}</span>
                 </button>
-
-                <div className="flex items-center gap-2">
-                  {chapterHref && (
-                    <a
-                      className="text-xs rounded-md border px-2 py-1 hover:bg-gray-50"
-                      target="_blank"
-                      rel="noreferrer"
-                      href={chapterHref}
-                    >
-                      Chapter
-                    </a>
-                  )}
-                  {curriculumHref && (
-                    <a
-                      className="text-xs rounded-md border px-2 py-1 hover:bg-gray-50"
-                      target="_blank"
-                      rel="noreferrer"
-                      href={curriculumHref}
-                    >
-                      Curriculum
-                    </a>
-                  )}
-                </div>
               </div>
 
               {/* Expandable weeks list */}
@@ -271,6 +273,84 @@ export default function PassionsPanel({
           Refresh
         </button>
       </div>
+
+      {/* === Format chooser modal === */}
+      {chooser.open && (
+        <>
+          <div
+            className="fixed inset-0 z-[60] bg-black/40"
+            onClick={closeChooser}
+            aria-hidden
+          />
+          <div
+            className="fixed z-[61] inset-0 grid place-items-center p-4"
+            role="dialog"
+            aria-modal="true"
+          >
+            <div className="w-full max-w-md rounded-2xl bg-slate-900 text-slate-100 shadow-2xl ring-1 ring-white/10">
+              <div className="px-5 py-4 border-b border-white/10">
+                <h3 className="text-lg font-semibold">Pick your format</h3>
+                <p className="mt-1 text-sm text-slate-300">
+                  Choose a file type for Week {chooser.week}.
+                </p>
+
+                {chooser.busy && (
+                  <div className="mt-3 flex items-center gap-2 text-xs text-emerald-200 bg-emerald-900/30 border border-emerald-700/50 rounded-md px-2 py-1">
+                    <svg className="h-3.5 w-3.5 animate-spin" viewBox="0 0 24 24" aria-hidden>
+                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
+                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 0 1 8-8v4A4 4 0 0 0 8 12H4z" />
+                    </svg>
+                    <span>Generating ({chooser.format.toUpperCase()}) for Week {chooser.week}…</span>
+                  </div>
+                )}
+              </div>
+
+              <div className="px-5 py-4 space-y-3">
+                <label className={`flex items-center gap-3 ${chooser.busy ? "opacity-50 pointer-events-none" : ""}`}>
+                  <input
+                    type="radio"
+                    name="fmt"
+                    value="pdf"
+                    checked={chooser.format === "pdf"}
+                    onChange={() => setChooser((c) => ({ ...c, format: "pdf" }))}
+                    className="h-4 w-4"
+                  />
+                  <span>.pdf (ready to share/print)</span>
+                </label>
+
+                <label className={`flex items-center gap-3 ${chooser.busy ? "opacity-50 pointer-events-none" : ""}`}>
+                  <input
+                    type="radio"
+                    name="fmt"
+                    value="docx"
+                    checked={chooser.format === "docx"}
+                    onChange={() => setChooser((c) => ({ ...c, format: "docx" }))}
+                    className="h-4 w-4"
+                  />
+                  <span>.docx (editable in Word/Docs)</span>
+                </label>
+              </div>
+
+              <div className="px-5 py-4 flex items-center justify-end gap-2 border-t border-white/10">
+                <button
+                  onClick={closeChooser}
+                  disabled={!!chooser.busy}
+                  className={`px-3 py-1.5 rounded-lg border border-white/20 ${chooser.busy ? "opacity-50" : "hover:bg-white/5"}`}
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={confirmGenerate}
+                  disabled={!!chooser.busy}
+                  className={`px-3 py-1.5 rounded-lg bg-indigo-500 text-white ${chooser.busy ? "opacity-60" : "hover:bg-indigo-600"}`}
+                >
+                  {chooser.busy ? "Generating…" : "Download"}
+                </button>
+              </div>
+            </div>
+          </div>
+        </>
+      )}
     </div>
   );
 

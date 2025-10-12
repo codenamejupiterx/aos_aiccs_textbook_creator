@@ -1,1 +1,22 @@
 @import "tailwindcss";
+/* Dashboard-only: Topbar styling to match the dark form */
+.topbar-compact > div {
+  background: #222833 !important;                 /* same as the form card */
+  color: #fff !important;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.10) !important;
+}
+
+/* make gray text inside Topbar readable on dark bg */
+.topbar-compact .text-gray-700,
+.topbar-compact .text-gray-600 {
+  color: #e5e7eb !important; /* slate-200-ish */
+}
+
+/* optional: tone down the default light border button in Topbar sign-out */
+.topbar-compact button {
+  border-color: rgba(255, 255, 255, 0.25) !important;
+  color: #fff !important;
+}
+.topbar-compact button:hover {
+  background: rgb(5, 108, 41) !important;
+}
