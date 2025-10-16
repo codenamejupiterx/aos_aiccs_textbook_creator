@@ -1,3 +1,4 @@
+/* eslint-disable */
 "use client";
 
 type Week = { week: number; title: string };

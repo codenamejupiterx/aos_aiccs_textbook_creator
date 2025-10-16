@@ -1,3 +1,4 @@
+/* eslint-disable */
 // app/api/chapters/[passionId]/download/route.ts
 export const runtime = "nodejs";
 

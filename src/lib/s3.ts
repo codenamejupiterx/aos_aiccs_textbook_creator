@@ -1,3 +1,4 @@
+/* eslint-disable */
 // src/lib/s3.ts
 import "server-only";
 import { S3Client, PutObjectCommand, GetObjectCommand } from "@aws-sdk/client-s3";

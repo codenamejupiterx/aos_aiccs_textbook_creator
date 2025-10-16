@@ -1,31 +1,29 @@
 /* eslint-disable */
 // src/app/api/generate/route.ts
-
-import { NextResponse } from "next/server";
+//import { NextResponse } from "next/server";
+import { NextResponse, type NextRequest } from "next/server";
 import crypto from "crypto";
+import { z } from "zod";
 import { getOpenAI } from "@/lib/openai";
 import { putItem, updatePassion } from "@/lib/dynamo";
 import { putText } from "@/lib/s3";
 import { auth } from "@/lib/auth";
+import { rl } from "@/lib/ratelimit"; // ensure this exists (e.g. Upstash wrapper)
 
 export const runtime = "nodejs";
 
-type Body = {
-  email?: string;          // optional; prefer session
-  subject: string;
-  passion: string;
-  ageRange: string;
-  notes?: string;
-  passionLikes?: string[];
-};
+/* ----------------------------- ZOD VALIDATION ----------------------------- */
+const BodySchema = z.object({
+  email: z.string().email().optional(),
+  subject: z.string().min(1).max(120),
+  passion: z.string().min(1).max(120),
+  ageRange: z.enum(["Grades 3–5", "Grades 6–8", "Grades 9–12", "College / Adult"]),
+  notes: z.string().max(2000).optional().default(""),
+  passionLikes: z.array(z.string().min(1).max(40)).max(10).optional().default([]),
+});
+type Body = z.infer<typeof BodySchema>;
 
-function reqd(x: unknown, name: string): string {
-  const v = (typeof x === "string" ? x.trim() : "");
-  if (!v) throw new Error(`Missing field: ${name}`);
-  return v;
-}
-
-/* ---------- Local fallback helpers (used when OpenAI quota/misconfig) ---------- */
+/* ----------------------------- Local fallbacks ---------------------------- */
 function buildLocalCurriculum(subject: string, passion: string, likes: string[]) {
   const weeks = Array.from({ length: 16 }, (_, i) => i + 1);
   return weeks.map((w) => ({
@@ -40,14 +38,7 @@ function buildLocalCurriculum(subject: string, passion: string, likes: string[])
     activity: `Hands-on: mini task using ${passion} context (Week ${w}).`,
   }));
 }
-
-function buildLocalWeek1(
-  subject: string,
-  passion: string,
-  ageRange: string,
-  likes: string[],
-  notes: string
-) {
+function buildLocalWeek1(subject: string, passion: string, ageRange: string, likes: string[], notes: string) {
   const body = [
     `Welcome! This first week introduces core ideas in ${subject} using a ${passion} theme.`,
     likes?.length ? `We’ll also weave in what you enjoy: ${likes.join(", ")}.` : "",
@@ -67,38 +58,119 @@ function buildLocalWeek1(
   ].join("\n");
   return { title: `Week 1 — ${subject} via ${passion} (${ageRange})`, body };
 }
-/* ----------------------------------------------------------------------------- */
 
-export async function POST(req: Request) {
-  const debug = new URL(req.url).searchParams.get("debug") === "1";
+/* ----------------------------- Helpers ----------------------------------- */
+// robust IP extractor (x-forwarded-for may contain a list)
+function getClientIP(req: Request) {
+  const xff = req.headers.get("x-forwarded-for");
+  if (xff) {
+    const first = xff.split(",")[0]?.trim();
+    if (first) return first;
+  }
+  return req.headers.get("x-real-ip") || "unknown";
+}
+
+/* --------------------------------- ROUTE ---------------------------------- */
+/* --------------------------------- ROUTE ---------------------------------- */
+export async function POST(req: NextRequest) {
+  const url = new URL(req.url);
+  const debug = url.searchParams.get("debug") === "1";
   const startedAt = Date.now();
 
-  try {
-    const body = (await req.json()) as Body;
+  // ── 0) CSRF FIRST (fail fast) ─────────────────────────────────────────────
+  {
+    const headerToken =
+      req.headers.get("x-csrf-token") ||
+      req.headers.get("x-csrf") ||
+      "";
 
-    // Prefer email from NextAuth session; allow body override for CLI/tests
+    // Prefer your own cookie; fall back to NextAuth cookie names if present
+    const rawCookie =
+      req.cookies.get("csrf_token")?.value ||
+      req.cookies.get("next-auth.csrf-token")?.value ||
+      req.cookies.get("authjs.csrf-token")?.value ||
+      "";
+
+    // NextAuth style is "token|hash"; keep only the left side; also decode %7C etc.
+    const cookieToken = decodeURIComponent(rawCookie).split("|")[0] || "";
+
+    if (!headerToken || headerToken !== cookieToken) {
+      return NextResponse.json({ ok: false, error: "bad_csrf" }, { status: 403 });
+    }
+  }
+
+  // ── 0b) Optional same-origin belt (uncomment to enable) ───────────────────
+  /*
+  {
+    const origin = req.headers.get("origin");
+    const allowed = new Set(
+      ["http://localhost:3000", process.env.APP_PUBLIC_URL || ""]
+        .filter(Boolean)
+        .map(o => new URL(o).origin)
+    );
+    if (origin && !allowed.has(new URL(origin).origin)) {
+      return NextResponse.json({ ok: false, error: "forbidden" }, { status: 403 });
+    }
+  }
+  */
+
+  try {
+    // 1) Auth (prefer session)
     const session = await auth();
     const sessionEmail = (session?.user as any)?.email?.trim?.() || "";
-    const email = (body.email && body.email.trim()) || sessionEmail;
+
+    // 2) Validate body (Zod)
+    let parsed: Body;
+    try {
+      parsed = BodySchema.parse(await req.json());
+    } catch (e: any) {
+      return NextResponse.json(
+        { ok: false, error: "invalid_input", detail: e?.message },
+        { status: 400 }
+      );
+    }
+
+    const email = (parsed.email || sessionEmail).trim();
     if (!email) {
       return NextResponse.json(
-        { ok: false, error: "Not authenticated: missing email (sign in or include email in body)" },
+        { ok: false, error: "unauthorized", detail: "missing email (sign in or include email in body)" },
         { status: 401 }
       );
     }
 
-    const subject = reqd(body.subject, "subject");
-    const passion = reqd(body.passion, "passion");
-    const ageRange = reqd(body.ageRange, "ageRange");
-    const notes = (body.notes ?? "").trim();
-    const passionLikes = Array.isArray(body.passionLikes) ? body.passionLikes.slice(0, 10) : [];
+    // 3) Rate limit (before heavy work)
+    {
+      const ip = getClientIP(req);
+      const { success, reset } = await rl.limit(`gen:${ip}`);
+      if (!success) {
+        const retryAfter = Math.max(1, Math.ceil((reset - Date.now()) / 1000));
+        return new NextResponse(
+          JSON.stringify({ ok: false, error: "rate_limited", retryAfter }),
+          {
+            status: 429,
+            headers: {
+              "Content-Type": "application/json; charset=utf-8",
+              "Retry-After": String(retryAfter),
+              "Cache-Control": "no-store",
+            },
+          }
+        );
+      }
+    }
 
-    // ENV (surface in success/debug for sanity)
+    // 4) Extract safe values
+    const subject = parsed.subject.trim();
+    const passion = parsed.passion.trim();
+    const ageRange = parsed.ageRange;
+    const notes = parsed.notes?.trim() ?? "";
+    const passionLikes = (parsed.passionLikes ?? []).slice(0, 10);
+
+    // ENV surface
     const region = process.env.AWS_REGION || "us-east-1";
     const table = process.env.DDB_TABLE || "TextbookCreator";
     const bucket = process.env.BUCKET || process.env.AWS_S3_BUCKET || "";
 
-    // ---------- 1) Prepare IDs/keys & initial write (status: pending) ----------
+    // 5) Prepare IDs/keys & initial write
     const passionId = `passion_${crypto.randomUUID()}`;
     const entity = `passion#${passionId}`;
     const nowIso = new Date().toISOString();
@@ -111,7 +183,6 @@ export async function POST(req: Request) {
       merged: `${prefix}summary.txt`,
     };
 
-    // Write the row first (so UI can list it immediately)
     await putItem({
       userId: email,
       entity,
@@ -130,13 +201,13 @@ export async function POST(req: Request) {
       updatedAt: nowIso,
     });
 
-    // ---------- 2) Generate curriculum + chapter (OpenAI → fallback) ----------
+    // 6) Generate (OpenAI → fallback)
     let curriculum16: any[] | null = null;
     let week1Chapter: { title: string; body: string } | null = null;
     let openaiError: string | null = null;
 
     try {
-      const openai = getOpenAI(); // throws if OPENAI_API_KEY missing
+      const openai = getOpenAI();
       const sys = "You are an expert educator who produces structured JSON only.";
       const userPrompt = `
 Return STRICT JSON with "curriculum16" (16 items) and "week1Chapter" (title/body),
@@ -159,9 +230,9 @@ Format:
       });
 
       const content = completion.choices?.[0]?.message?.content || "{}";
-      const parsed = JSON.parse(content);
-      curriculum16 = Array.isArray(parsed?.curriculum16) ? parsed.curriculum16 : null;
-      week1Chapter = parsed?.week1Chapter ?? null;
+      const parsedJSON = JSON.parse(content);
+      curriculum16 = Array.isArray(parsedJSON?.curriculum16) ? parsedJSON.curriculum16 : null;
+      week1Chapter = parsedJSON?.week1Chapter ?? null;
     } catch (e: any) {
       openaiError = e?.message || String(e);
       curriculum16 = buildLocalCurriculum(subject, passion, passionLikes);
@@ -172,7 +243,7 @@ Format:
       throw new Error("Generation failed (OpenAI+fallback both empty).");
     }
 
-    // ---------- 3) Best-effort S3 writes; mark record ready on success ----------
+    // 7) S3 writes & mark ready
     const s3: Record<string, string> = {};
     if (bucket) {
       try {
@@ -196,11 +267,11 @@ Format:
         });
       } catch (e) {
         console.error("[S3] putText failed:", e);
-        // keep the row; it will remain "pending"
+        // keep "pending"
       }
     }
 
-    // ---------- 4) Success ----------
+    // 8) Success
     return NextResponse.json({
       ok: true,
       tookMs: Date.now() - startedAt,
@@ -215,16 +286,6 @@ Format:
   } catch (err: any) {
     const msg = err?.message || String(err);
     console.error("[/api/generate] ERROR:", msg, err?.stack || "");
-    const payload: any = { ok: false, error: msg };
-    if (debug) {
-      payload.stack = err?.stack || null;
-      payload.env = {
-        hasOpenAIKey: Boolean(process.env.OPENAI_API_KEY),
-        region: process.env.AWS_REGION,
-        table: process.env.DDB_TABLE,
-        bucket: process.env.BUCKET || process.env.AWS_S3_BUCKET || "",
-      };
-    }
-    return NextResponse.json(payload, { status: 500 });
+    return NextResponse.json({ ok: false, error: msg }, { status: 500 });
   }
 }

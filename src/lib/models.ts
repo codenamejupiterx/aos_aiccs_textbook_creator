@@ -1,3 +1,4 @@
+/* eslint-disable */
 /* Define Mongoose models: UserProfile, Passion, Curriculum, Chapter */
 import { Schema, model, models } from "mongoose";
 

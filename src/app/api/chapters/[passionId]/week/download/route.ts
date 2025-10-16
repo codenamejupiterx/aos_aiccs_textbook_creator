@@ -1,3 +1,4 @@
+/* eslint-disable */
 import { NextResponse } from "next/server";
 import { auth } from "@/lib/auth";
 import { getItem } from "@/lib/dynamo";

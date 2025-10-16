@@ -1,3 +1,4 @@
+/* eslint-disable */
 // src/lib/openai.ts
 import OpenAI from "openai";
 

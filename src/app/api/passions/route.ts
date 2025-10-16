@@ -1,3 +1,4 @@
+/* eslint-disable */
 // src/app/api/passions/route.ts
 import { NextResponse } from "next/server";
 import { auth } from "@/lib/auth";

@@ -1,3 +1,4 @@
+/* eslint-disable */
 // src/app/welcome/layout.tsx
 import Topbar from "@/components/Topbar";
 

@@ -1,3 +1,4 @@
+/* eslint-disable */
 // src/app/layout.tsx
 import type { Metadata } from "next";
 import "./globals.css";

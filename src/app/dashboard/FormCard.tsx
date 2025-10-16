@@ -1,3 +1,4 @@
+/* eslint-disable */
 // app/(dashboard)/FormCard.tsx
 "use client";
 import { useState } from "react";

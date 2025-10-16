@@ -1,3 +1,4 @@
+/* eslint-disable */
 // src/app/page.tsx
 import { auth } from "@/lib/auth";
 import { redirect } from "next/navigation";

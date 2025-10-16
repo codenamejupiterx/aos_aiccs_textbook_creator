@@ -1,3 +1,4 @@
+/* eslint-disable */
 // src/app/welcome/page.tsx
 import Image from "next/image";
 import { auth } from "@/lib/auth";

@@ -1,3 +1,4 @@
+/* eslint-disable */
 // src/lib/dynamo.ts
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import {

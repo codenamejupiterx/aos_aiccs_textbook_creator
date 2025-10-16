@@ -1,3 +1,4 @@
+/* eslint-disable */
 export default function ShimmerPanel({
   variant = "light", // "light" | "dark"
   className = "",

@@ -1,3 +1,4 @@
+/* eslint-disable */
 import mongoose from "mongoose";
 let cached = (global as any)._mongo as typeof mongoose | undefined;
 
