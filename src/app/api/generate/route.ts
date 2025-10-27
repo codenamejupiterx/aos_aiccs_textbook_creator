@@ -208,16 +208,76 @@ export async function POST(req: NextRequest) {
 
     try {
       const openai = getOpenAI();
-      const sys = "You are an expert educator who produces structured JSON only.";
+      const sys = "You are an expert educator and instructional designer. You must return ONLY valid, minified JSON that conforms exactly to the provided schema. Do not include prose, markdown, comments, or trailing commas. If you cite sources, they must be verifiable (books, articles, reputable websites); if no sources were used, mark the chapter as AI-generated per the schema.";
       const userPrompt = `
-Return STRICT JSON with "curriculum16" (16 items) and "week1Chapter" (title/body),
-for subject ${subject}, age range ${ageRange}, themed around "${passion}".
-Likes: ${JSON.stringify(passionLikes)}. Notes: ${notes || "(none)"}.
-Format:
+Create a 16-week curriculum plan and a long-form Week 1 chapter.
+
+Subject: ${subject}
+Age range: ${ageRange}
+Theme: "${passion}"
+Learner likes (verbatim JSON): ${JSON.stringify(passionLikes)}
+Teacher/learner notes: ${notes || "(none)"}
+
+### OUTPUT SCHEMA (return STRICT JSON matching this)
 {
-  "curriculum16":[{"week":1,"title":"","goals":[],"topics":[],"activity":""},...],
-  "week1Chapter":{"title":"","body":""}
-}`.trim();
+  "curriculum16": [
+    {
+      "week": 1,
+      "title": "",
+      "goals": ["", ""],
+      "topics": ["", ""],
+      "activity": "",
+      "assessment": ""
+    }
+    // ... weeks 2-16, same shape
+  ],
+  "week1Chapter": {
+    "title": "",
+    "abstract": "",
+    "sections": [
+      {"heading": "", "body": ""},
+      {"heading": "", "body": ""}
+    ],
+    "figures": [
+      {"label": "Figure 1", "caption": "", "suggested_visual": ""}
+    ],
+    "citations_style": "APA",   // or "MLA" if you prefer
+    "intext_citations": true,   // use (Author, Year) inline
+    "references": [
+      {
+        "type": "web|book|article|report",
+        "title": "",
+        "author": "",
+        "year": "",
+        "publisher": "",
+        "url": ""
+      }
+    ],
+    "ai_generated": false,      // set true if no verifiable sources used
+    "estimated_word_count": 1400
+  }
+}
+
+### CONTENT REQUIREMENTS
+- Curriculum:
+  - 16 items (weeks 1–16). Each must include 2–4 clear, measurable goals, 2–5 topics, one hands-on activity, and a quick assessment.
+- Week 1 chapter (research-paper style):
+  - 1–2 sentence abstract.
+  - 4–6 sections (e.g., Background, Core Concepts, Applied Example tied to the learner’s passion, Practice, Reflection).
+  - Use in-text citations where claims or data appear; keep them realistic and checkable.
+  - “References” must list the works actually cited. If no solid sources are available, leave "references":[]
+    and set "ai_generated": true.
+  - Target ~1200–1600 words total; write complete paragraphs, no bullet lists in sections.
+- Tone and level:
+  - Age-appropriate, inclusive, and encouraging; avoid jargon unless explained.
+- Safety and originality:
+  - No copyrighted text beyond short quotations (<25 words) with citation.
+  - Do NOT fabricate source details. Prefer omitting a reference and setting "ai_generated": true over making one up.
+
+### VALIDATION
+- Return ONLY compact JSON (no comments/newlines beyond JSON, no trailing commas).
+- Ensure curriculum16 has exactly 16 objects with week=1..16 and unique titles.
+`.trim();
 
       const completion = await openai.chat.completions.create({
         model: process.env.OPENAI_MODEL || "gpt-4o-mini",

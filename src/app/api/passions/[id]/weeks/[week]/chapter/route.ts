@@ -6,6 +6,12 @@ import { NextResponse } from "next/server";
 import { auth } from "@/lib/auth";
 import { getItemByUserEntity } from "@/lib/dynamo";
 import { getOpenAI } from "@/lib/openai";
+import type { Output, WeekItem, Week1Chapter, Reference } from "@/types/aiccs";
+import { z } from "zod";
+import { OutputSchema as StrictOutputSchema } from "@/lib/aiccs-schema";
+
+
+
 
 
 
@@ -29,15 +35,53 @@ import { Document, Paragraph, Packer } from "docx";
 /* import type PDFKitNS from "pdfkit";
 const PDFDocument = require("pdfkit") as typeof PDFKitNS; */
 
-type ChapterReq = { title: string };
 
-// --- add this near your other helpers ---
-/* function getPdfKitCtor() {
-  // works for both require("pdfkit") and import("pdfkit").default
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
-  const mod = require("pdfkit");
-  return (mod && mod.default) ? mod.default : mod;
-} */
+
+/** Accept proper URLs or drop them; prevents zod “Invalid url” failures */
+const UrlLoose = z
+  .string()
+  .trim()
+  .optional()
+  .transform(v => (v && v.length ? v : undefined))
+  .refine(v => v === undefined || /^https?:\/\/\S+/i.test(v), { message: "Invalid url" });
+
+const LooseReference = z.object({
+  type: z.enum(["web","book","article","report"]).optional(),
+  title: z.string().trim().optional(),
+  author: z.string().trim().optional(),
+  year: z.string().trim().optional(),
+  publisher: z.string().trim().optional(),
+  url: UrlLoose.optional(),
+});
+
+/** Map common alias keys the model may return → your exact schema keys */
+function normalizeModelJson(raw: any) {
+  const out: any = {};
+  out.curriculum16 =
+    raw?.curriculum16 ?? raw?.curriculum ?? raw?.weeks ?? raw?.plan ?? [];
+
+  out.week1Chapter =
+    raw?.week1Chapter ??
+    raw?.chapter ??
+    raw?.week_one_chapter ??
+    raw?.week1 ??
+    raw?.week_1 ??
+    null;
+
+  // Clean references if present
+  if (out.week1Chapter?.references) {
+    try {
+      const cleaned = z.array(LooseReference).parse(out.week1Chapter.references);
+      out.week1Chapter.references = cleaned.filter(
+        r => (r.title && r.title.length >= 2) || r.url
+      );
+    } catch {
+      out.week1Chapter.references = [];
+    }
+  }
+  return out;
+}
+
 
 function sanitizeFilename(name: string) {
   return name.replace(/[^\w\s.-]/g, "").trim().replace(/\s+/g, "_").slice(0, 80);
@@ -68,6 +112,85 @@ function buildPrompt(p: {
     `- Format as Markdown with headings, subheadings, and bullet points where helpful.`,
   ].join("\n");
 }
+
+function buildJsonPrompt(p: {
+  subject: string;
+  ageRange: string;
+  passion: string;
+  chapterTitle: string;
+  passionLikes: string[] | string;
+  notes?: string;
+  targetWords?: number;     // e.g., 1800
+  minSections?: number;     // e.g., 6
+  minRefs?: number;         // e.g., 3
+}) {
+  const likesJson = Array.isArray(p.passionLikes)
+    ? JSON.stringify(p.passionLikes)
+    : JSON.stringify([p.passionLikes].filter(Boolean));
+  const notes = (p.notes ?? "").trim() || "(none)";
+  const targetWords = p.targetWords ?? 1800;
+  const minSections = p.minSections ?? 6;
+  const minRefs = p.minRefs ?? 3;
+
+  return `
+Create a 16-week curriculum plan and a long-form Week 1 chapter in STRICT JSON.
+
+Subject: ${p.subject}
+Age range: ${p.ageRange}
+Theme: "${p.passion}"
+Learner likes (verbatim JSON): ${likesJson}
+Notes: ${notes}
+
+### OUTPUT SCHEMA (return STRICT, MINIFIED JSON ONLY)
+{
+  "curriculum16":[
+    {"week":1,"title":"","goals":["",""],"topics":["",""],"activity":"","assessment":""}
+    // ... weeks 2–16, same shape
+  ],
+  "week1Chapter":{
+    "title":"",
+    "abstract":"",
+    "sections":[
+      {"heading":"","body":""},
+      {"heading":"","body":""}
+    ],
+    "figures":[{"label":"Figure 1","caption":"","suggested_visual":""}],
+    "citations_style":"APA",
+    "intext_citations":true,
+    "references":[
+      {"type":"web|book|article|report","title":"","author":"","year":"","publisher":"","url":""}
+    ],
+    "ai_generated":false,
+    "estimated_word_count":${targetWords}
+  }
+}
+
+### CONTENT REQUIREMENTS (WEEK 1 CHAPTER)
+- Target total words: ~${targetWords} (NOT less than ${Math.floor(targetWords*0.85)}).
+- Sections: ${minSections}–8 sections. Use this skeleton (rename headings as needed):
+  1) Background & Significance,
+  2) Core Concepts & Definitions (with formulas or key terms where relevant),
+  3) Historical or Cultural Context (tie to ${p.passion}),
+  4) Applied Case Study tied to the learner’s passion (rigorous, step-by-step),
+  5) Practice & Worked Examples (at least 2 multi-step examples),
+  6) Assessment & Reflection (10 varied questions + brief answer key).
+- Depth:
+  - Each section body should be ≥ ${Math.max(200, Math.floor(targetWords/(minSections+1)))} words.
+  - When making claims or using data, include in-text citations (Author, Year).
+  - References must be REALISTIC and verifiable. Prefer reputable books/articles/web from museums, universities, journals, standards bodies.
+  - If adequate sources are unavailable, set "ai_generated": true and leave "references":[].
+- Style:
+  - Age-appropriate, but rigorous. Define jargon and show at least one equation or formal definition if applicable to ${p.subject}.
+  - Use complete paragraphs in "sections" (NO bullet lists inside "sections").
+- Curriculum (weeks 1–16): Each week includes 2–4 measurable goals, 2–5 topics, one hands-on activity, and a quick assessment.
+
+### VALIDATION
+- Return ONLY minified JSON (no markdown, no prose, no comments).
+- "curriculum16" must contain exactly 16 items with week=1..16 and unique titles.
+`.trim();
+}
+
+
 
 // ---- helpers to build file bytes
 async function buildDocxBuffer(title: string, text: string) {
@@ -153,12 +276,132 @@ async function buildPdfBuffer(title: string, text: string) {
   return await pdfDoc.save(); // Uint8Array
 }
 
+function renderChapterMarkdown(ch: Week1Chapter): string {
+  const lines: string[] = [];
+  lines.push(`# ${ch.title}`);
+  if (ch.abstract) lines.push("", `**Abstract** — ${ch.abstract}`);
+
+  for (const sec of ch.sections) {
+    lines.push("", `## ${sec.heading}`, "", sec.body);
+  }
+
+  if (ch.figures?.length) {
+    lines.push("", "## Figures");
+    for (const f of ch.figures) {
+      lines.push(`- **${f.label}**: ${f.caption} _(suggested: ${f.suggested_visual})_`);
+    }
+  }
+
+  if (ch.references?.length) {
+    lines.push("", "## References");
+    for (const r of ch.references) {
+      const base = `- ${r.author} (${r.year}). *${r.title}*${r.publisher ? `. ${r.publisher}` : ""}`;
+      lines.push(r.url ? `${base}. ${r.url}` : base);
+    }
+  } else if (ch.ai_generated) {
+    lines.push("", "_Note: AI Generated (no external sources cited)._");
+  }
+
+  return lines.join("\n");
+}
+
+function countWords(s: string): number {
+  return (s || "").trim().split(/\s+/).filter(Boolean).length;
+}
+
+function chapterWordCount(ch: Week1Chapter): number {
+  let n = countWords(ch.title) + countWords(ch.abstract || "");
+  for (const sec of ch.sections || []) n += countWords(sec.body || "") + countWords(sec.heading || "");
+  for (const fig of ch.figures || []) n += countWords(fig.caption || "") + countWords(fig.suggested_visual || "");
+  return n;
+}
+
+type DepthPolicy = {
+  minSections: number;
+  minWordsTotal: number;
+  minWordsPerSection: number;
+  minReferences: number;       // set to 0 to allow AI-generated with no refs
+  citationsRequired: boolean;  // if true, intext_citations must be true when references exist
+};
+
+type ChapterReq = { title: string };
+
+
+function assessDepth(ch: Output["week1Chapter"], p: DepthPolicy) {
+  const words = (ch.sections?.map(s => s.body).join(" ") || "").trim().split(/\s+/).length;
+  const perSectionOk = ch.sections?.every(s => (s.body.split(/\s+/).length >= p.minWordsPerSection)) ?? false;
+  const refs = ch.references?.length ?? 0;
+  const issues: string[] = [];
+  if (!ch.sections || ch.sections.length < p.minSections) issues.push(`Need ≥ ${p.minSections} sections`);
+  if (words < p.minWordsTotal) issues.push(`Need ≥ ${p.minWordsTotal} words (have ~${words})`);
+  if (!perSectionOk) issues.push(`Each section must have ≥ ${p.minWordsPerSection} words`);
+  if (p.citationsRequired && refs < p.minReferences && !ch.ai_generated)
+    issues.push(`Need ≥ ${p.minReferences} references or set ai_generated:true`);
+  return { ok: issues.length === 0, issues };
+}
+
+
+
+function normalizeUrl(u: unknown): string | null {
+  const raw = String(u ?? "").trim();
+  if (!raw) return null;
+
+  // If already absolute http(s), keep it
+  if (/^https?:\/\//i.test(raw)) {
+    try { new URL(raw); return raw; } catch { return null; }
+  }
+
+  // If it looks like a domain/path, prefix https://
+  if (/^[\w.-]+\.[a-z]{2,}([/:?#].*)?$/i.test(raw)) {
+    const prefixed = "https://" + raw;
+    try { new URL(prefixed); return prefixed; } catch { /* fall through */ }
+  }
+
+  // Last chance: let URL decide (will throw on garbage)
+  try { new URL(raw); return raw; } catch { return null; }
+}
+
+function scrubReferences(obj: any): void {
+  const refs = obj?.week1Chapter?.references;
+  if (!Array.isArray(refs)) return;
+
+  const okTypes = new Set(["web", "book", "article", "report"]);
+  obj.week1Chapter.references = refs
+    .filter(Boolean)
+    .map((r: any) => {
+      const copy: any = { ...r };
+      if (!okTypes.has(copy.type)) copy.type = "web";
+
+      if ("url" in copy) {
+        const norm = normalizeUrl(copy.url);
+        if (!norm) delete copy.url; else copy.url = norm;
+      }
+      return copy;
+    });
+
+  // If after scrubbing we have zero usable refs, flip the flag
+  if ((obj.week1Chapter.references?.length ?? 0) === 0) {
+    obj.week1Chapter.ai_generated = true;
+  }
+}
+
+
+
+
 // POST /api/passions/[id]/weeks/[week]/chapter?format=pdf|docx&debug=1&dryrun=1
-export async function POST(req: Request, { params }: { params: { id: string; week: string } }) {
+export async function POST(
+  req: Request,
+  ctx: { params: Promise<{ id: string; week: string }> } // 👈 params is a Promise
+) {
+  const { id, week } = await ctx.params; 
   const url = new URL(req.url);
   const debugMode = url.searchParams.get("debug") === "1";
   const dryrun = url.searchParams.get("dryrun") === "1";
   const format = (url.searchParams.get("format") || "pdf").toLowerCase() as "pdf" | "docx" | "md";
+
+  let data: Output | null = null;
+  let issues: string[] = [];
+  let attempt = 0;
 
   try {
     // 1) Auth
@@ -167,8 +410,8 @@ export async function POST(req: Request, { params }: { params: { id: string; wee
     if (!email) return NextResponse.json({ ok: false, error: "unauthorized" }, { status: 401 });
 
     // 2) Params & body
-    const rawId = decodeURIComponent(params.id || "");
-    const weekNum = Number(params.week || "0");
+    const rawId = decodeURIComponent(id || "");
+    const weekNum = Number(week || "0");
     if (!rawId || !Number.isFinite(weekNum) || weekNum <= 0) {
       return NextResponse.json({ ok: false, error: "missing or invalid params" }, { status: 400 });
     }
@@ -237,126 +480,216 @@ export async function POST(req: Request, { params }: { params: { id: string; wee
       );
     }
 
-   // 6) OpenAI generation → Markdown content
+  
+   // 6) OpenAI generation → strict JSON → validate → render Markdown
 const systemMsg =
-  "You write accurate, engaging, age-appropriate textbook chapters with clear structure and examples.";
-const userMsg = buildPrompt({
-  subject_var,
-  ageRange_var,
-  chapter_title_var: chapterTitle,
-  passion_var,
-  passionLikes_var,
-});
+  "You are an expert educator and instructional designer. Return ONLY valid, minified JSON matching the schema. No prose/markdown/comments/trailing commas. If no verifiable sources used, set ai_generated:true and references:[].";
+
+const policy: DepthPolicy = {
+  minSections: 6,
+  minWordsTotal: 1700,
+  minWordsPerSection: 220,
+  minReferences: 3,
+  citationsRequired: true,
+};
 
 const openai = getOpenAI();
 if (!process.env.OPENAI_API_KEY) {
   return NextResponse.json({ ok: false, error: "OPENAI_API_KEY missing on server" }, { status: 500 });
 }
 
-const model = process.env.OPENAI_MODEL || process.env.OPENAI_TEXT_MODEL || "gpt-4o";
+const model = process.env.OPENAI_MODEL || process.env.OPENAI_TEXT_MODEL || "gpt-4o-mini";
 
-let content: string;
-try {
+// ---- request helper (makes one JSON attempt) ----
+async function requestOnce(instructionOverride?: string): Promise<Output> {
+  const userMsg = instructionOverride
+    ? instructionOverride
+    : buildJsonPrompt({
+        subject: subject_var,
+        ageRange: ageRange_var,
+        passion: passion_var,
+        chapterTitle,
+        passionLikes: passionLikes_var,
+        notes: passion.notes || "",
+        targetWords: 1800,
+        minSections: 6,
+        minRefs: 3,
+      });
+
   const completion = await openai.chat.completions.create({
     model,
-    temperature: 0.5,
+    temperature: 0.35,
+    max_tokens: 6000,                        // give it room
+    response_format: { type: "json_object" },// force JSON
     messages: [
       { role: "system", content: systemMsg },
       { role: "user", content: userMsg },
     ],
   });
 
-  content =
-    completion.choices?.[0]?.message?.content?.trim() ||
-    "# Chapter\n\n(Empty content returned.)";
-} catch (err: any) {
-  console.error("[chapter route] OpenAI failed:", err);
-  if (debugMode) {
-    return NextResponse.json(
-      { ok: false, where: "openai", error: String(err?.message || err) },
-      { status: 500 }
-    );
+  const content = completion.choices?.[0]?.message?.content || "{}";
+
+  // 1) parse raw JSON from the model
+  let raw: any;
+  try {
+    raw = JSON.parse(content);
+  } catch (e) {
+    // If it somehow ignored response_format, force a failure so we refine
+    throw new Error("model_not_json");
   }
-  throw err;
+
+  // 2) normalize common alias keys + clean references
+  const normalized = normalizeModelJson(raw);
+
+  // 3) strict validate against your OutputSchema
+  const result = StrictOutputSchema.safeParse(normalized);
+  if (!result.success) {
+    // Surface schema details when debug=1
+    if (debugMode) {
+      throw new Error("Schema validation failed: " + JSON.stringify(result.error.format()));
+    }
+    throw new Error("model_json_invalid");
+  }
+  return result.data;
 }
 
-const baseName = sanitizeFilename(`chapter_week${weekNum}_${chapterTitle || "Untitled"}`);
+try {
+  // attempt 1
+  attempt = 1;
+  data = await requestOnce();
 
-// 7) Emit in requested format (streamed bytes to satisfy BodyInit without Blob)
-if (format === "docx") {
+  // assess depth
+  let check = assessDepth(data.week1Chapter, policy);
+  if (!check.ok) {
+    issues = check.issues;
+
+    // attempt 2
+    attempt = 2;
+    const refine = `
+You previously returned JSON for the chapter, but it needs deepening.
+Fix ONLY the fields that need more depth and return the FULL JSON object again, minified.
+
+Deficits:
+${issues.map(s => `- ${s}`).join("\n")}
+
+Rules:
+- Keep the same schema and keys.
+- Expand "sections" where needed. Add more sections if necessary (max 8).
+- Provide at least ${policy.minReferences} solid references unless you must set "ai_generated": true.
+- Maintain age-appropriateness and ${subject_var} rigor.
+
+Return only the full, minified JSON object.`;
+    data = await requestOnce(refine);
+
+    // re-assess
+    check = assessDepth(data.week1Chapter, policy);
+    if (!check.ok) {
+      issues = check.issues;
+
+      // attempt 3
+      attempt = 3;
+      const refine2 = `
+Deepen further and fix remaining deficits. Return full, minified JSON.
+
+Remaining deficits:
+${issues.map(s => `- ${s}`).join("\n")}
+
+Hard requirements:
+- ≥ ${policy.minSections} sections.
+- ≥ ${policy.minWordsTotal} total words and ≥ ${policy.minWordsPerSection} words per section.
+- ≥ ${policy.minReferences} references unless "ai_generated": true with "references":[].
+- In-text citations true if references exist.
+
+Return only the JSON.`;
+      data = await requestOnce(refine2);
+
+      check = assessDepth(data.week1Chapter, policy);
+      if (!check.ok && debugMode) {
+        return NextResponse.json({ ok: false, where: "depth", attempt, issues: check.issues }, { status: 422 });
+      }
+    }
+  }
+} catch (err: any) {
+  // One last “auto-clean” fallback: try to normalize whatever came back (if anything),
+  // mark AI-generated, strip bad references, then validate. If that still fails, bubble up.
   try {
-    const buf = await buildDocxBuffer(chapterTitle || `Week ${weekNum} Chapter`, content);
-    const bytes = new Uint8Array(buf); // Node Buffer -> Uint8Array
+    const last = (err?.message || "").includes("{")
+      ? JSON.parse(err.message) // not typical, but just in case you threw raw json
+      : null;
+    if (last) {
+      const normalized = normalizeModelJson(last);
+      if (normalized?.week1Chapter) {
+        normalized.week1Chapter.ai_generated = true;
+        normalized.week1Chapter.references = [];
+      }
+      const ok = StrictOutputSchema.safeParse(normalized);
+      if (ok.success) data = ok.data as Output;
+    }
+  } catch { /* ignore */ }
 
-    const stream = new ReadableStream({
-      start(controller) {
-        controller.enqueue(bytes);
-        controller.close();
-      },
-    });
-
-    return new Response(stream, {
-      status: 200,
-      headers: {
-        "Content-Type":
-          "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-        "Content-Disposition": `attachment; filename="${baseName}.docx"`,
-        "Cache-Control": "no-store",
-      },
-    });
-  } catch (err: any) {
-    console.error("[chapter route] DOCX export failed:", err);
+  if (!data) {
     if (debugMode) {
       return NextResponse.json(
-        { ok: false, where: "docx", error: String(err?.message || err) },
+        { ok: false, where: "openai_or_parse", attempt, error: String(err?.message || err) },
         { status: 500 }
       );
     }
     throw err;
   }
+}
+
+// ---- Render & export ----
+const chapterMd = renderChapterMarkdown(data.week1Chapter);
+const baseName = sanitizeFilename(
+  `chapter_week${weekNum}_${data.week1Chapter.title || chapterTitle || "Untitled"}`
+);
+
+if (format === "docx") {
+  const buf = await buildDocxBuffer(data.week1Chapter.title || `Week ${weekNum} Chapter`, chapterMd);
+  const bytes = new Uint8Array(buf);
+  const stream = new ReadableStream({ start(c){ c.enqueue(bytes); c.close(); } });
+  return new Response(stream, {
+    status: 200,
+    headers: {
+      "Content-Type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      "Content-Disposition": `attachment; filename="${baseName}.docx"`,
+      "Cache-Control": "no-store",
+    },
+  });
 }
 
 if (format === "pdf") {
-  try {
-    const buf = await buildPdfBuffer(chapterTitle || `Week ${weekNum} Chapter`, content);
-    const bytes = new Uint8Array(buf); // Node Buffer -> Uint8Array
-
-    const stream = new ReadableStream({
-      start(controller) {
-        controller.enqueue(bytes);
-        controller.close();
-      },
-    });
-
-    return new Response(stream, {
-      status: 200,
-      headers: {
-        "Content-Type": "application/pdf",
-        "Content-Disposition": `attachment; filename="${baseName}.pdf"`,
-        "Cache-Control": "no-store",
-      },
-    });
-  } catch (err: any) {
-    console.error("[chapter route] PDF export failed:", err);
-    if (debugMode) {
-      return NextResponse.json(
-        { ok: false, where: "pdf", error: String(err?.message || err) },
-        { status: 500 }
-      );
-    }
-    throw err;
-  }
+  const buf = await buildPdfBuffer(data.week1Chapter.title || `Week ${weekNum} Chapter`, chapterMd);
+  const bytes = new Uint8Array(buf);
+  const stream = new ReadableStream({ start(c){ c.enqueue(bytes); c.close(); } });
+  return new Response(stream, {
+    status: 200,
+    headers: {
+      "Content-Type": "application/pdf",
+      "Content-Disposition": `attachment; filename="${baseName}.pdf"`,
+      "Cache-Control": "no-store",
+    },
+  });
 }
 
-// Fallback: Markdown
-return new Response(content, {
+// Markdown fallback
+return new Response(chapterMd, {
   status: 200,
   headers: {
     "Content-Type": "text/markdown; charset=utf-8",
     "Content-Disposition": `attachment; filename="${baseName}.md"`,
     "Cache-Control": "no-store",
-  },
+  }
 });
+
+// return new Response(content, {
+//   status: 200,
+//   headers: {
+//     "Content-Type": "text/markdown; charset=utf-8",
+//     "Content-Disposition": `attachment; filename="${baseName}.md"`,
+//     "Cache-Control": "no-store",
+//   },
+// });
 } catch (e: any) {
   // ⬅︎ closes the OUTER try { … } that began earlier in POST
   const safe = String(e?.message || e);

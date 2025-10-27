@@ -1,36 +1,31 @@
-# --- Build stage ---
+# --- deps ---
+FROM node:20-alpine AS deps
+WORKDIR /app
+COPY package*.json ./
+RUN npm ci
+
+# --- build ---
 FROM node:20-alpine AS builder
 WORKDIR /app
-
-# needed for next/image (sharp) on alpine
-RUN apk add --no-cache libc6-compat
-
-# Install deps using whichever lockfile you have
-COPY package.json package-lock.json* pnpm-lock.yaml* yarn.lock* ./
-RUN \
-  if [ -f package-lock.json ]; then npm ci; \
-  elif [ -f pnpm-lock.yaml ]; then npm i -g pnpm && pnpm i --frozen-lockfile; \
-  elif [ -f yarn.lock ]; then yarn --frozen-lockfile; \
-  else npm i; fi
-
-# Copy source and build (you already set output:'standalone' in next.config)
+COPY --from=deps /app/node_modules ./node_modules
 COPY . .
-ENV NEXT_TELEMETRY_DISABLED=1
+# IMPORTANT: use stable builder, not turbopack
 RUN npm run build
 
-# --- Runtime stage ---
+# --- runner ---
 FROM node:20-alpine AS runner
 WORKDIR /app
 ENV NODE_ENV=production
-ENV NEXT_TELEMETRY_DISABLED=1
-# App Runner will inject PORT=8080; we honor it
 ENV PORT=8080
-ENV HOSTNAME=0.0.0.0  
+ENV HOST=0.0.0.0
 
-# Standalone output includes server.js + minimal node_modules
-COPY --from=builder /app/.next/standalone ./
-COPY --from=builder /app/.next/static ./.next/static
+# copy runtime assets
+COPY --from=builder /app/node_modules ./node_modules
+COPY --from=builder /app/.next ./.next
 COPY --from=builder /app/public ./public
+COPY --from=builder /app/package*.json ./
 
 EXPOSE 8080
-CMD ["node", "server.js"]
+
+# JSON-form CMD prevents the shell from mangling args
+CMD ["npm","run","start"]

@@ -367,7 +367,7 @@ async function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
       {loading && (
         <div className="fixed inset-0 z-[9999] grid place-items-center bg-black/60 backdrop-blur-sm">
           <div className="rounded-2xl bg-[#0f1216] p-6 shadow-xl border border-white/10 text-center">
-            <img src="/processing.gif" alt="Processing…" className="mx-auto h-24 w-24" />
+            <img src="/aos_logo_v1.png" alt="Processing…" className="mx-auto h-24 w-24" />
             <h3 className="mt-4 text-white text-lg font-medium">Building your readings…</h3>
             <p className="mt-1 text-sm text-gray-400">
               This usually takes a moment. You can stay on this page.

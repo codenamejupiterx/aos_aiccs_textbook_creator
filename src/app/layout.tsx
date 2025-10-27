@@ -2,6 +2,7 @@
 // src/app/layout.tsx
 import type { Metadata } from "next";
 import "./globals.css";
+import "./vars.css"; 
 import Providers from "./providers";
 
 export const metadata: Metadata = {
