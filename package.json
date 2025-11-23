@@ -5,10 +5,11 @@
   "scripts": {
     "dev": "next dev --turbopack",
     "build": "next build",
-    "start": "next start -p ${PORT:-8080} -H 0.0.0.0",
+    "start": "next start -p ${PORT:-3000} -H 0.0.0.0",
+    "worker:bg-test": "tsx src/worker/bgTestWorker.ts",
+    "worker:chapters": "tsx src/worker/workerServer.ts",
     "lint": "eslint"
   },
-  
   "dependencies": {
     "@aws-sdk/client-dynamodb": "^3.893.0",
     "@aws-sdk/client-s3": "^3.896.0",
@@ -17,7 +18,9 @@
     "@upstash/ratelimit": "^2.0.6",
     "@upstash/redis": "^1.35.6",
     "docx": "^9.5.1",
+    "dotenv": "^16.6.1",
     "fontkit": "^2.0.4",
+    "html-to-docx": "^1.8.0",
     "md-to-pdf": "^5.2.4",
     "mongoose": "^8.19.1",
     "next": "15.5.3",
@@ -25,7 +28,9 @@
     "openai": "^5.22.0",
     "pdf-lib": "^1.17.1",
     "react": "19.1.0",
-    "react-dom": "19.1.0"
+    "react-dom": "19.1.0",
+    "server-only": "^0.0.1",
+    "tsx": "^4.19.0"
   },
   "devDependencies": {
     "@eslint/eslintrc": "^3",

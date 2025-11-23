@@ -2,10 +2,11 @@
 // src/app/dashboard/page.tsx
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState} from "react";
 import { createPortal } from "react-dom";
 import PassionsPanel from "@/components/PassionsPanel";
 import Topbar from "@/components/Topbar";
+import { PassionLikesInput } from "@/components/PassionLikesInput";
 
 type UIPassion = {
   id: string;
@@ -121,6 +122,14 @@ export default function DashboardPage() {
   const [panelOpen, setPanelOpen] = useState(false);
   const [passions, setPassions] = useState<UIPassion[]>([]);
   const [loadingPassions, setLoadingPassions] = useState(true);
+  
+
+   // success modal
+  const [successId, setSuccessId] = useState<string | null>(null);
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [highlightId, setHighlightId] = useState<string | null>(null);
+  
+
 
   async function loadPassions() {
     try {
@@ -138,7 +147,7 @@ export default function DashboardPage() {
       setLoadingPassions(false);
     }
   }
-
+  ///1.load passions + window listeners
   useEffect(() => {
   loadPassions();
   const onRefresh = () => loadPassions();
@@ -153,10 +162,20 @@ export default function DashboardPage() {
   };
 }, []);
 
+// 2) make sure CSRF exists
 useEffect(() => {
   // make sure middleware runs and a CSRF cookie exists in this tab
   ensureCsrf().catch(() => {});
 }, []);
+
+// 3) highlight scroll effect
+  useEffect(() => {
+    if (!highlightId) return;
+    const el = document.getElementById("aos-new-passion");
+    if (el) {
+      el.scrollIntoView({ behavior: "smooth", block: "start" });
+    }
+  }, [highlightId]);
 
   // ----- form state -----
   const [loading, setLoading] = useState(false);
@@ -164,11 +183,16 @@ useEffect(() => {
   const [subject, setSubject] = useState("");
   const [passion, setPassion] = useState("");
   const [notes, setNotes] = useState("");
-  const [loves, setLoves] = useState("");
+  const [passionLikes, setPassionLikes] = useState<string[]>([]);
+ 
 
-  // success modal
-  const [successId, setSuccessId] = useState<string | null>(null);
-  const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [subjectError, setSubjectError] = useState("");
+  const [passionError, setPassionError] = useState("");
+
+  const SUBJECT_MAX = 120;
+  const PASSION_MAX = 120;
+
+ 
 
   
 
@@ -182,6 +206,53 @@ function getNextAuthCsrfTokenOnly(): string {
   return decoded.split("|")[0] ?? "";
 }
 
+// async function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
+//   e.preventDefault();
+//   setLoading(true);
+//   setErrorMsg(null);
+//   setSuccessId(null);
+
+//   try {
+//     const payload = {
+//       subject: subject.trim(),
+//       passion: passion.trim(),
+//       ageRange: ageRange.trim(),
+//       notes: notes.trim(),
+//       passionLikes, // ← already an array of strings
+//     };
+
+//   // Read any supported CSRF source (decoded & left-part only)
+//   let csrf = getAnyCsrfTokenLeftSide();
+//   if (!csrf) {
+//     await ensureCsrf();                 // should call /api/csrf with same-origin
+//     csrf = getAnyCsrfTokenLeftSide();   // re-read after cookie is set
+//   }
+
+//   const res = await fetch("/api/generate?debug=1", {
+//     method: "POST",
+//     credentials: "same-origin",
+//     headers: {
+//       "Content-Type": "application/json",
+//       "x-csrf-token": csrf || "",
+//     },
+//     body: JSON.stringify(payload),
+//   });
+
+//     if (res.status === 401) throw new Error("You must be signed in.");
+//     if (!res.ok) throw new Error(`Server error ${res.status}: ${await res.text()}`);
+
+//     const data = await res.json();
+//     await loadPassions();
+//     setSuccessId(data?.passionId ? String(data.passionId) : "ready");
+//   } catch (err: any) {
+//     console.error("generate failed:", err);
+//     setErrorMsg(err?.message || "Failed to generate.");
+//   } finally {
+//     setLoading(false);
+//   }
+// }
+
+
 async function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
   e.preventDefault();
   setLoading(true);
@@ -189,45 +260,71 @@ async function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
   setSuccessId(null);
 
   try {
-    const passionLikes = loves.split(/\n|,/).map(s => s.trim()).filter(Boolean);
     const payload = {
       subject: subject.trim(),
       passion: passion.trim(),
       ageRange: ageRange.trim(),
       notes: notes.trim(),
-      passionLikes,
+      passionLikes, // already an array of strings
     };
 
-  // Read any supported CSRF source (decoded & left-part only)
-  let csrf = getAnyCsrfTokenLeftSide();
-  if (!csrf) {
-    await ensureCsrf();                 // should call /api/csrf with same-origin
-    csrf = getAnyCsrfTokenLeftSide();   // re-read after cookie is set
-  }
+    // --- CSRF handling (same pattern you already use) ---
+    let csrf = getAnyCsrfTokenLeftSide();
+    if (!csrf) {
+      await ensureCsrf();                 // hits /api/csrf
+      csrf = getAnyCsrfTokenLeftSide();   // re-read after cookie is set
+    }
 
-  const res = await fetch("/api/generate?debug=1", {
-    method: "POST",
-    credentials: "same-origin",
-    headers: {
-      "Content-Type": "application/json",
-      "x-csrf-token": csrf || "",
-    },
-    body: JSON.stringify(payload),
-  });
+    const res = await fetch("/api/bg-test/enqueue", {
+      method: "POST",
+      credentials: "same-origin",
+      headers: {
+        "Content-Type": "application/json",
+        "x-csrf-token": csrf || "",
+      },
+      body: JSON.stringify(payload),
+    });
 
-    if (res.status === 401) throw new Error("You must be signed in.");
-    if (!res.ok) throw new Error(`Server error ${res.status}: ${await res.text()}`);
+    if (res.status === 401) {
+      throw new Error("You must be signed in.");
+    }
+    if (!res.ok) {
+      throw new Error(
+        `Server error ${res.status}: ${(await res.text()).slice(0, 200)}`
+      );
+    }
 
-    const data = await res.json();
+    const data = (await res.json()) as {
+      ok: boolean;
+      passionId?: string;
+    };
+
+    if (!data.ok || !data.passionId) {
+      throw new Error("Unexpected response from server.");
+    }
+
+    // 🔁 pull fresh passions so the slideout includes the new one
     await loadPassions();
-    setSuccessId(data?.passionId ? String(data.passionId) : "ready");
+
+    // store passionId so the success modal can show ID
+    setSuccessId(data.passionId);
+    // (optional) pre-set highlight so it auto-scrolls in PassionsPanel
+    setHighlightId(data.passionId);
+
+    // clear the form
+    setAgeRange("");
+    setSubject("");
+    setPassion("");
+    setNotes("");
+    setPassionLikes([]);
   } catch (err: any) {
-    console.error("generate failed:", err);
-    setErrorMsg(err?.message || "Failed to generate.");
+    console.error("bg-test enqueue failed:", err);
+    setErrorMsg(err?.message || "Failed to submit request.");
   } finally {
     setLoading(false);
   }
 }
+
 
 
 
@@ -291,10 +388,12 @@ async function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
                     <input
                       className={field}
                       value={subject}
+                      maxLength={120}
                       onChange={(e) => setSubject(e.target.value)}
                       placeholder="Algebra I, U.S. History, Biology…"
                       required
                     />
+                    <p className="text-xs text-gray-400 mt-1">{subject.length}/120</p>
                   </div>
 
                   <div>
@@ -302,23 +401,20 @@ async function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
                     <input
                       className={field}
                       value={passion}
+                      maxLength={120}
                       onChange={(e) => setPassion(e.target.value)}
                       placeholder="Football, anime, nails, cooking, Roblox…"
                       required
                     />
+                    <p className="text-xs text-gray-400 mt-1">{passion.length}/120</p>
                   </div>
+
 
                   <div>
                     <label className={label}>
-                      List 5–10 things that you love most about the passion you listed above*
+                      List up to 20 things that you love most about the passion you listed above*
                     </label>
-                    <textarea
-                      rows={4}
-                      className={field + " resize-none"}
-                      value={loves}
-                      onChange={(e) => setLoves(e.target.value)}
-                      placeholder="speed, teamwork, strategy, defense… (comma or newline separated)"
-                    />
+                    <PassionLikesInput value={passionLikes} onChange={setPassionLikes} />
                   </div>
 
                   <div className="pt-2">
@@ -343,25 +439,29 @@ async function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
 
       {/* PassionsPanel slideout */}
       {panelOpen &&
-        (loadingPassions ? (
-          <PassionsPanel
-            passions={[]}
-            onRefresh={loadPassions}
-            mode="standalone"
-            title="Mini-Chapters"
-            defaultOpen
-            onClose={() => setPanelOpen(false)}
-          />
-        ) : (
-          <PassionsPanel
-            passions={passions}
-            onRefresh={loadPassions}
-            mode="standalone"
-            title="Mini-Chapters"
-            defaultOpen
-            onClose={() => setPanelOpen(false)}
-          />
-        ))}
+      (loadingPassions ? (
+        <PassionsPanel
+          passions={[]}
+          onRefresh={loadPassions}
+          mode="standalone"
+          title="Mini-Chapters"
+          defaultOpen
+          onClose={() => setPanelOpen(false)}
+          highlightedId={highlightId || undefined}   // 👈
+        />
+      ) : (
+        <PassionsPanel
+          passions={passions}
+          onRefresh={loadPassions}
+          mode="standalone"
+          title="Mini-Chapters"
+          defaultOpen
+          onClose={() => setPanelOpen(false)}
+          highlightedId={highlightId || undefined}   // 👈
+        />
+      ))}
+     
+
 
       {/* Processing overlay */}
       {loading && (
@@ -387,19 +487,39 @@ async function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
 
             <div className="mt-5 flex gap-3">
               <button
-                onClick={() => {
-                  setPanelOpen(true);
-                  setSuccessId(null);
+                onClick={async () => {
+                  if (!successId) {
+                    setSuccessId(null);
+                    return;
+                  }
+
+                  try {
+                    // No more /api/bg-test/promote — worker already created the passion row
+                    await loadPassions();
+                    setPanelOpen(true);
+
+                    // If successId is actually a jobId and not a passionId, skip highlight.
+                    // For now, just open the panel; user can see the newest item at the top.
+                    // setHighlightId(successId); // enable later if successId becomes passionId
+
+                    // Clear form + modal
+                    setAgeRange("");
+                    setSubject("");
+                    setPassion("");
+                    setNotes("");
+                    setPassionLikes([]);
+                    setSuccessId(null);
+                  } catch (e) {
+                    console.error("open mini-chapters error:", e);
+                    setErrorMsg("Something went wrong opening your mini-chapters.");
+                    setSuccessId(null);
+                  }
                 }}
                 className="flex-1 rounded-lg bg-emerald-600 px-4 py-2 text-white shadow hover:shadow-md"
               >
+
+              
                 Open My Mini-Chapters
-              </button>
-              <button
-                onClick={() => setSuccessId(null)}
-                className="rounded-lg border border-gray-300 px-4 py-2 text-gray-800 hover:bg-gray-50"
-              >
-                Close
               </button>
             </div>
 

@@ -26,7 +26,7 @@ export async function putItem(item: Record<string, any>) {
 /**
  * Get by actual table keys. Matches your schema:
  *   PK: userId (string, plain email, e.g. "benjaforge@gmail.com")
- *   SK: entity (string, e.g. "passion#<uuid>")
+ *   SK: entity (string, e.g. "passion#<uuid>" or "chapterJob#<uuid>")
  */
 export async function getItem(userId: string, entity: string) {
   const res = await ddb.send(
@@ -137,4 +137,69 @@ export async function listPassionsForUser(userId: string) {
 export async function getPassionById(userId: string, passionId: string) {
   const entity = `passion#${passionId}`; // matches your table
   return getItem(userId, entity);
+}
+
+/** Generic update helper for any row (jobs, etc.) ------------------------ */
+export async function updateItem(args: {
+  userId: string;
+  entity: string;
+  updates: Record<string, any>;
+}) {
+  const { userId, entity, updates } = args;
+
+  const names: Record<string, string> = {};
+  const values: Record<string, any> = {};
+  const sets: string[] = [];
+
+  let i = 0;
+  for (const [key, value] of Object.entries(updates)) {
+    const nk = `#n${i}`;
+    const vk = `:v${i}`;
+    names[nk] = key;
+    values[vk] = value;
+    sets.push(`${nk} = ${vk}`);
+    i++;
+  }
+
+  if (!sets.length) {
+    // nothing to update
+    return;
+  }
+
+  await ddb.send(
+    new UpdateCommand({
+      TableName: TABLE,
+      Key: { userId, entity },
+      UpdateExpression: `SET ${sets.join(", ")}`,
+      ExpressionAttributeNames: names,
+      ExpressionAttributeValues: values,
+    })
+  );
+}
+
+/** Mark a chapter job row as DONE + attach S3 info ------------------------ */
+export async function markChapterJobDone(
+  userEmail: string,
+  jobId: string,
+  opts: {
+    bucket: string;
+    key: string;
+    format: string;
+    filename?: string;
+  }
+) {
+  const now = new Date().toISOString();
+
+  await updateItem({
+    userId: userEmail,
+    entity: `chapterJob#${jobId}`,
+    updates: {
+      status: "done",
+      outputBucket: opts.bucket,
+      outputKey: opts.key,
+      format: opts.format,
+      filename: opts.filename ?? `chapter_${jobId}.${opts.format}`,
+      updatedAt: now,
+    },
+  });
 }

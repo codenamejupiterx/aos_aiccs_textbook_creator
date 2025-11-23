@@ -13,13 +13,20 @@ import { rl } from "@/lib/ratelimit"; // ensure this exists (e.g. Upstash wrappe
 export const runtime = "nodejs";
 
 /* ----------------------------- ZOD VALIDATION ----------------------------- */
+const MAX_ITEMS = 20;
+const MAX_LEN = 40;
+
 const BodySchema = z.object({
   email: z.string().email().optional(),
   subject: z.string().min(1).max(120),
   passion: z.string().min(1).max(120),
   ageRange: z.enum(["Grades 3–5", "Grades 6–8", "Grades 9–12", "College / Adult"]),
   notes: z.string().max(2000).optional().default(""),
-  passionLikes: z.array(z.string().min(1).max(40)).max(10).optional().default([]),
+  passionLikes: z
+    .array(z.string().min(1).max(MAX_LEN))
+    .max(MAX_ITEMS)
+    .optional()
+    .default([]),
 });
 type Body = z.infer<typeof BodySchema>;
 
@@ -199,6 +206,10 @@ export async function POST(req: NextRequest) {
       status: "pending",
       createdAt: nowIso,
       updatedAt: nowIso,
+
+      // 🔑 NEW:
+      type: "passion",
+      userEmail: email, // if your list/query code ever uses this
     });
 
     // 6) Generate (OpenAI → fallback)
@@ -280,7 +291,7 @@ Teacher/learner notes: ${notes || "(none)"}
 `.trim();
 
       const completion = await openai.chat.completions.create({
-        model: process.env.OPENAI_MODEL || "gpt-4o-mini",
+        model: process.env.OPENAI_MODEL || "gpt-5",
         response_format: { type: "json_object" },
         temperature: 0.4,
         messages: [

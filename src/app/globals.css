@@ -20,3 +20,14 @@
 .topbar-compact button:hover {
   background: rgb(5, 108, 41) !important;
 }
+
+.aos-highlight-row {
+  animation: aos-row-pulse 0.9s ease-in-out 3;
+  outline: 2px solid rgba(16, 185, 129, 0.6);
+  border-radius: 0.5rem;
+}
+@keyframes aos-row-pulse {
+  0% { background: rgba(16, 185, 129, 0.15); }
+  50% { background: rgba(16, 185, 129, 0.4); }
+  100% { background: rgba(16, 185, 129, 0); }
+}

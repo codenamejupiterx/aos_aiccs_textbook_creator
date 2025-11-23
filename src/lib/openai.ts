@@ -28,7 +28,7 @@ export function getOpenAI() {
       const model =
         process.env.OPENAI_MODEL ||
         process.env.OPENAI_TEXT_MODEL ||
-        "gpt-4o";
+        "gpt-5";
 
       console.log(
         "[openai] key:", mask(apiKey),
@@ -46,6 +46,6 @@ export function getOpenAIModel() {
   return (
     process.env.OPENAI_MODEL ||
     process.env.OPENAI_TEXT_MODEL ||
-    "gpt-4o"
+    "gpt-5"
   );
 }

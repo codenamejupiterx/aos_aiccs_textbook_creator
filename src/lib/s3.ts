@@ -1,6 +1,6 @@
 /* eslint-disable */
 // src/lib/s3.ts
-import "server-only";
+//import "server-only";
 import { S3Client, PutObjectCommand, GetObjectCommand } from "@aws-sdk/client-s3";
 
 /** Single client (don’t recreate per call) */
@@ -15,17 +15,14 @@ export const getObjectCommand = (Key: string) =>
 export async function putText(
   bucket: string,
   key: string,
-  text: string,
-  contentType = "text/plain; charset=utf-8"
-): Promise<void> {
-  if (!bucket) throw new Error("putText: missing bucket");
-  if (!key) throw new Error("putText: missing key");
-
+  body: string | Uint8Array,   // ⬅️ allow both text *and* binary
+  contentType: string
+) {
   await s3.send(
     new PutObjectCommand({
       Bucket: bucket,
       Key: key,
-      Body: text,
+      Body: body,               // Uint8Array is valid for S3 Body
       ContentType: contentType,
     })
   );
