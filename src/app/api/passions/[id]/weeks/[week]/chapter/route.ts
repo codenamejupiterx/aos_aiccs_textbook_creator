@@ -1,13 +1,11 @@
 /* eslint-disable */
+// src/app/api/passions/[id]/weeks/[week]/chapter/route.ts
 export const runtime = "nodejs";
 
 import { NextResponse, type NextRequest } from "next/server";
 import { auth } from "@/lib/auth";
 import crypto from "crypto";
-import {
-  DynamoDBClient,
-  PutItemCommand,
-} from "@aws-sdk/client-dynamodb";
+import { DynamoDBClient, PutItemCommand } from "@aws-sdk/client-dynamodb";
 
 const REGION = process.env.AWS_REGION || "us-east-1";
 const TABLE = process.env.DDB_TABLE;
@@ -38,6 +36,7 @@ export async function POST(
   const { id, week } = await ctx.params;
   const passionId = decodeURIComponent(id || "");
   const weekNum = Number(week || "1");
+
   if (!passionId || !Number.isFinite(weekNum) || weekNum <= 0) {
     return NextResponse.json(
       { ok: false, error: "bad_params" },

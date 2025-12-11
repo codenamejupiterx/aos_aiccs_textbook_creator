@@ -1,4 +1,5 @@
 /* eslint-disable */
+// src/app/api/bg-test/route.ts
 import { NextResponse } from "next/server";
 import crypto from "crypto";
 import { auth } from "@/lib/auth";

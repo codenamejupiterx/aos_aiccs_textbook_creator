@@ -1,4 +1,5 @@
 /* eslint-disable */
+// src/app/api/chapter-jobs/[jobId]/download/route.ts
 import { NextResponse } from "next/server";
 import { auth } from "@/lib/auth";
 import { getItem } from "@/lib/dynamo";
@@ -9,7 +10,7 @@ import { Readable } from "stream";
 export const runtime = "nodejs";
 
 export async function GET(
-  req: Request,
+  _req: Request,
   { params }: { params: { jobId: string } }
 ) {
   const session = await auth();
@@ -31,7 +32,12 @@ export async function GET(
     );
   }
 
-  const bucket = (item.outputBucket as string) || process.env.S3_BUCKET!;
+  const bucket =
+    (item.outputBucket as string) ||
+    process.env.BUCKET ||
+    process.env.AWS_S3_BUCKET ||
+    process.env.S3_BUCKET!;
+
   const key = item.outputKey as string | undefined;
   const filename =
     (item.filename as string) ||

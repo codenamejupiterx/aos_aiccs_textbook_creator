@@ -1,3 +1,4 @@
+// src/app/api/generate/schema.ts
 import { z } from "zod";
 
 export const MAX_ITEMS = 20;

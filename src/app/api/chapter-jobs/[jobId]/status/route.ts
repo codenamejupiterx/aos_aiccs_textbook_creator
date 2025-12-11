@@ -1,4 +1,5 @@
 /* eslint-disable */
+// src/app/api/chapter-jobs/[jobId]/status/route.ts
 import { NextResponse } from "next/server";
 import { auth } from "@/lib/auth";
 import { getItem } from "@/lib/dynamo";
@@ -6,7 +7,7 @@ import { getItem } from "@/lib/dynamo";
 export const runtime = "nodejs";
 
 export async function GET(
-  req: Request,
+  _req: Request,
   { params }: { params: { jobId: string } }
 ) {
   const session = await auth();
@@ -30,8 +31,19 @@ export async function GET(
 
   const status = (item.status as string) || "pending";
 
-  // If not done yet, just report the status
+  // 🔹 Map "failed" → "error" so the UI stops polling and shows an error.
   if (status !== "done") {
+    if (status === "failed") {
+      return NextResponse.json({
+        ok: true,
+        status: "error",
+        error:
+          (item.errorMessage as string) ||
+          "Chapter generation failed. Please try again.",
+      });
+    }
+
+    // pending / running / etc.
     return NextResponse.json({ ok: true, status });
   }
 
@@ -49,7 +61,7 @@ export async function GET(
     );
   }
 
-  // IMPORTANT: give the frontend a SAME-ORIGIN URL, not raw S3
+  // Same-origin URL for the actual file bytes
   const downloadUrl = `/api/chapter-jobs/${encodeURIComponent(
     jobId
   )}/download`;

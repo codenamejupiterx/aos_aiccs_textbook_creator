@@ -1,4 +1,5 @@
 /* eslint-disable */
+// src/app/api/passions/[id]/weeks/route.ts
 import { NextResponse } from "next/server";
 import { auth } from "@/lib/auth";
 import { getPassionById } from "@/lib/dynamo";
