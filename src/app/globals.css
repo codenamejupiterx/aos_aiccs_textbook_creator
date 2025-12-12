@@ -31,3 +31,53 @@
   50% { background: rgba(16, 185, 129, 0.4); }
   100% { background: rgba(16, 185, 129, 0); }
 }
+
+
+/* ✅ Make the topbar layout responsive so the green button doesn't drift */
+.topbar-compact > div {
+  display: flex !important;
+  align-items: center !important;
+  justify-content: space-between !important;
+  gap: 12px !important;
+  flex-wrap: wrap !important;           /* KEY */
+}
+
+/* Keep action buttons from overflowing weirdly */
+.topbar-compact button {
+  max-width: 100%;
+}
+
+/* Phone: stack/center */
+@media (max-width: 640px) {
+  .topbar-compact > div {
+    justify-content: center !important;
+  }
+}
+
+/* --------------------------- */
+/* Phone-only layout helpers   */
+/* --------------------------- */
+@media (max-width: 640px) {
+  /* Make the top bar behave on small screens (button won't float weirdly) */
+  .topbar-compact > div {
+    display: flex !important;
+    flex-wrap: wrap !important;
+    align-items: center !important;
+    gap: 10px !important;
+    padding: 10px 12px !important;
+  }
+
+  /* Keep topbar buttons from overflowing */
+  .topbar-compact button {
+    max-width: 100% !important;
+    white-space: nowrap !important;
+  }
+
+  /* Prevent iOS auto-zoom + make inputs feel better on phones */
+  input,
+  select,
+  textarea {
+    font-size: 16px;
+  }
+}
+
