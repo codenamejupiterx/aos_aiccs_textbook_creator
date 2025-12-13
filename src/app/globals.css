@@ -81,3 +81,72 @@
   }
 }
 
+/* =========================================================
+   AOS Phone Layout Fixes (form screen + mini-chapters button)
+   ========================================================= */
+
+@media (max-width: 640px) {
+  /* 1) Green "My Mini-Chapters" button: keep it centered + not oversized */
+  .aos-mini-btn {
+    position: static !important;     /* turn off absolute */
+    
+    width: min(92vw, 360px) !important;
+    margin: 10px auto 6px auto !important;
+    display: block !important;
+    padding: 10px 14px !important;
+    font-size: 14px !important;
+    border-radius: 999px !important;
+    white-space: nowrap !important;
+    transform: translateY(25px) !important; /* <- tweak 4px–10px to taste */
+  }
+
+  /* 2) Main form card: use the screen better (5px side gutters like you asked) */
+  .aos-form-card {
+    width: calc(100vw - 10px) !important; /* 5px gutters */
+    margin: 14px auto !important;
+    padding: 18px 14px !important;
+    border-radius: 22px !important;
+
+  }
+
+  /* Make inputs/selects stretch nicely inside that card */
+  .aos-form-card input,
+  .aos-form-card select,
+  .aos-form-card textarea {
+    width: 100%;
+    max-width: 100%;
+  }
+
+  /* 3) Fix the "Add an interest..." row overflow */
+  .aos-interest-row {
+    display: flex;
+    gap: 10px;
+    flex-wrap: wrap;            /* KEY: prevents off-screen overflow */
+    align-items: center;
+  }
+
+  .aos-interest-row input {
+    flex: 1 1 240px;            /* input gets priority space */
+    min-width: 0;               /* important for flex overflow */
+  }
+
+  .aos-interest-row button {
+    flex: 0 0 auto;
+  }
+
+  /* If you want the Add button to drop below on very small widths */
+  @media (max-width: 390px) {
+    .aos-interest-row button {
+      width: 100%;
+    }
+  }
+
+  /* Prevent iOS zoom-on-focus */
+  input,
+  select,
+  textarea {
+    font-size: 16px;
+  }
+}
+
+

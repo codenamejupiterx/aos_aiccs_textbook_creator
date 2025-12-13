@@ -352,17 +352,19 @@ async function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
         <button
           type="button"
           onClick={() => setPanelOpen(true)}
-          className="absolute right-4 top-1/2 -translate-y-1/2 z-50 w-[220px] select-none rounded-2xl bg-emerald-500 px-6 py-3 text-white font-semibold shadow-lg shadow-emerald-900/20 ring-1 ring-emerald-400/20 hover:bg-emerald-400 active:bg-emerald-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-emerald-400 transition"
+          className="aos-mini-btn absolute right-4 top-1/2 -translate-y-1/2 z-50 w-[220px] select-none rounded-2xl bg-emerald-500 px-6 py-3 text-white font-semibold shadow-lg shadow-emerald-900/20 ring-1 ring-emerald-400/20 hover:bg-emerald-400 active:bg-emerald-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-emerald-400 transition"
         >
           My Mini-Chapters
         </button>
+
+
       </div>
 
       {/* Main form */}
       <main className="overflow-auto">
         <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 py-6">
-          <section className="px-[96px]">
-            <div className="rounded-3xl border border-white/10 bg-[#222833] shadow-[0_20px_60px_-30px_rgba(0,0,0,0.8)] py-8 px-6 sm:px-8">
+          <section className="px-2 sm:px-[96px]">
+            <div className="aos-form-card rounded-3xl border border-white/10 bg-[#222833] shadow-[0_20px_60px_-30px_rgba(0,0,0,0.8)] py-8 px-6 sm:px-8">
               <div className="max-w-3xl mx-auto w-full">
                 <form id="aiccsForm" className="space-y-6" onSubmit={handleSubmit}>
                   <div className="md:w-1/3">
@@ -411,10 +413,13 @@ async function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
 
 
                   <div>
-                    <label className={label}>
-                      List up to 20 things that you love most about the passion you listed above*
-                    </label>
+                    <label className={label}>Add things you love about this passion (one at a time)*</label>
+
                     <PassionLikesInput value={passionLikes} onChange={setPassionLikes} />
+
+                    <p className="text-xs text-gray-400 mt-2">
+                      Add one item, click Add, then repeat — up to 20 total.
+                    </p>
                   </div>
 
                   <div className="pt-2">

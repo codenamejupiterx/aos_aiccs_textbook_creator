@@ -19,6 +19,20 @@ type Row = {
 
 type WeekRow = { week: number; title: string };
 
+function safeSlug(input: string) {
+  return (input || "")
+    .trim()
+    .replace(/\s+/g, "_")           // spaces -> _
+    .replace(/[^\w\-]+/g, "")       // remove weird chars
+    .replace(/_+/g, "_")            // collapse ___
+    .replace(/^_+|_+$/g, "");       // trim leading/trailing _
+}
+
+function buildChapterFilename(week: number, title: string, format: "pdf" | "docx") {
+  const slug = safeSlug(title) || "chapter";
+  return `chapter_${week}_${slug}.${format}`;
+}
+
 function downloadBlob(blob: Blob, filename: string) {
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
@@ -35,11 +49,21 @@ async function generateChapterAndDownload(
   passionId: string,
   week: number,
   title: string,
-  format: "pdf" | "docx" = "pdf"
+  format: "pdf" | "docx" = "pdf",
+  onProgress?: (msg: string) => void
 ): Promise<{ downloadUrl: string; filename: string }> {
   const enqueueUrl = `/api/passions/${encodeURIComponent(
     passionId
   )}/weeks/${week}/chapter?debug=1&format=${format}`;
+
+  // small helper so we don't spam the same message repeatedly
+  let lastMsg = "";
+  const say = (msg: string) => {
+    if (!onProgress) return;
+    if (msg === lastMsg) return;
+    lastMsg = msg;
+    onProgress(msg);
+  };
 
   console.log(
     "🧭 Chapter enqueue URL:",
@@ -47,7 +71,9 @@ async function generateChapterAndDownload(
   );
   console.log("📦 Params:", { passionId, week, title, format });
 
-  // 1) ENQUEUE THE JOB
+  // 1) ENQUEUE
+  say("Queued…");
+
   const res = await fetch(enqueueUrl, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -59,46 +85,64 @@ async function generateChapterAndDownload(
   if (!res.ok || !json?.ok) {
     const msg = json?.error || `HTTP ${res.status}`;
     console.error("❌ Chapter enqueue failed:", msg, json);
+    say("Failed to queue the job.");
     throw new Error(msg);
   }
 
   const jobId: string | undefined = json.jobId;
   if (!jobId) {
     console.error("❌ Chapter enqueue response missing jobId:", json);
+    say("Queue error (missing job id).");
     throw new Error("Chapter job could not be queued (no jobId).");
   }
 
   console.log("📨 Chapter job queued:", jobId);
+  say("Generating your chapter…");
 
-  // 2) POLL STATUS ENDPOINT UNTIL DONE
+  // 2) POLL STATUS
   const statusUrl = `/api/chapter-jobs/${encodeURIComponent(jobId)}/status`;
-  const maxAttempts = 60; // e.g. 60 * 5s = 5 minutes
+  const maxAttempts = 60; // 60 * 5s = 5 minutes
   const delayMs = 5000;
 
   let lastStatus = "pending";
 
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    // ✅ show “still alive” progress
+    // - every attempt shows attempt count
+    // - extra friendly milestones at specific attempts
+    say(`Working… (${attempt + 1}/${maxAttempts})`);
+
+    if (attempt === 6) say("Still working… this can take a minute or two.");
+    if (attempt === 18) say("Almost there… finishing up the file.");
+
     const sRes = await fetch(statusUrl, { cache: "no-store" });
     const sJson: any = await sRes.json().catch(() => null);
 
     if (!sRes.ok || !sJson?.ok) {
       const msg = sJson?.error || `status HTTP ${sRes.status}`;
       console.error("❌ Chapter status check failed:", msg, sJson);
+      say("Having trouble checking status…");
       throw new Error(msg);
     }
 
-    lastStatus = sJson.status;
+    lastStatus = (sJson.status as string) || "pending";
     console.log(
       `📊 Chapter job status [${jobId}] attempt ${attempt + 1}/${maxAttempts}:`,
       lastStatus
     );
 
+    // If your worker uses more statuses, these messages will feel nicer.
+    if (lastStatus === "pending") say(`Queued… (${attempt + 1}/${maxAttempts})`);
+    if (lastStatus === "running")
+      say(`Generating… (${attempt + 1}/${maxAttempts})`);
+
     if (lastStatus === "done") {
       const downloadUrl: string | undefined = sJson.downloadUrl;
-      const filename: string =
-        sJson.filename || `chapter_${jobId}.${format}`;
+      //const filename: string = sJson.filename || `chapter_${jobId}.${format}`;
+      const filename: string = buildChapterFilename(week, title, format);
 
       if (!downloadUrl) {
+        say("Finished, but download link is missing.");
         throw new Error("Chapter job finished but no downloadUrl was provided.");
       }
 
@@ -107,23 +151,27 @@ async function generateChapterAndDownload(
         filename,
       });
 
-      // 👉 return info to the component
+      say("Ready!");
       return { downloadUrl, filename };
     }
 
     if (lastStatus === "error") {
       const msg = sJson.error || "Chapter generation failed.";
       console.error("❌ Chapter job error:", msg, sJson);
+      say("Generation failed.");
       throw new Error(msg);
     }
 
     await new Promise((r) => setTimeout(r, delayMs));
   }
 
+  say("Timed out waiting for the chapter to finish.");
   throw new Error(
     `Timed out waiting for chapter job to finish (last status: ${lastStatus}).`
   );
 }
+
+
 
 // assume Row, WeekRow, generateChapterAndDownload are defined/imported above
 
@@ -160,6 +208,7 @@ export default function PassionsPanel({
   const [clickMsg, setClickMsg] = useState<string>("");
   const [busyWeek, setBusyWeek] = useState<string | null>(null);
   const scrollRef = useRef<HTMLDivElement | null>(null);
+  const [progressMsg, setProgressMsg] = useState<string>("");
 
   // 🔹 new: pending download info (url + filename)
   const [pendingDownload, setPendingDownload] = useState<{
@@ -265,6 +314,8 @@ export default function PassionsPanel({
 
   /* ========= 4) week click → open format modal ========= */
   function handleWeekClick(passionId: string, w: WeekRow) {
+    setProgressMsg(""); // ✅ clear old progress text from any previous run
+
     setChooser({
       open: true,
       passionId,
@@ -277,21 +328,24 @@ export default function PassionsPanel({
   }
 
   async function confirmGenerate() {
+    setProgressMsg(""); // ✅ clear old progress text from any previous run
     if (!chooser.passionId || !chooser.week || !chooser.title) return;
+
     setChooser((c) => ({ ...c, busy: true }));
     const tag = `${chooser.passionId}:${chooser.week}`;
     setBusyWeek(tag);
 
     try {
-      // 🔁 This now returns { downloadUrl, filename }
+      setProgressMsg("Queued…"); // ✅ HERE (immediately when user clicks Download)
+
       const { downloadUrl, filename } = await generateChapterAndDownload(
         chooser.passionId,
         chooser.week,
         chooser.title,
-        chooser.format
+        chooser.format,
+        (msg) => setProgressMsg(msg)
       );
 
-      // 👉 Save it so the banner + button can use it
       setPendingDownload({ url: downloadUrl, filename });
     } catch (e: any) {
       console.error(e);
@@ -302,7 +356,9 @@ export default function PassionsPanel({
     }
   }
 
+
   function closeChooser() {
+    setProgressMsg(""); // ✅ clear old progress text from any previous run
     if (chooser.busy) return;
     setChooser((c) => ({ ...c, open: false }));
   }
@@ -334,14 +390,13 @@ export default function PassionsPanel({
 
       {/* 🔹 Ready-to-download banner */}
       {pendingDownload && (
-        <div className="mb-3 rounded-md border border-emerald-300 bg-emerald-50 px-3 py-2 text-sm text-emerald-800">
-          <div className="flex items-center justify-between gap-2">
-            <span>
+        <div className={styles.readyBanner}>
+          <div className={styles.readyBannerRow}>
+            <span className={styles.readyBannerText}>
               Your chapter is ready:{" "}
-              <span className="font-semibold">
-                {pendingDownload.filename}
-              </span>
+              <span className={styles.readyBannerFile}>{pendingDownload.filename}</span>
             </span>
+
             <button
               onClick={() => {
                 const a = document.createElement("a");
@@ -352,17 +407,16 @@ export default function PassionsPanel({
                 document.body.appendChild(a);
                 a.click();
                 a.remove();
-
-                // optional: clear banner after click
                 setPendingDownload(null);
               }}
-              className="rounded-md bg-emerald-600 px-3 py-1 text-xs font-semibold text-white shadow hover:bg-emerald-700"
+              className={styles.readyBannerBtn}
             >
-              Download now
+              Download
             </button>
           </div>
         </div>
       )}
+
 
       {!passions?.length ? (
         <p className="text-gray-700">No plans yet. Create one on the left.</p>
@@ -495,31 +549,14 @@ export default function PassionsPanel({
                 </p>
 
                 {chooser.busy && (
-                  <div className="mt-3 flex items-center gap-2 text-xs text-emerald-200 bg-emerald-900/30 border border-emerald-700/50 rounded-md px-2 py-1">
-                    <svg
-                      className="h-3.5 w-3.5 animate-spin"
-                      viewBox="0 0 24 24"
-                      aria-hidden
-                    >
-                      <circle
-                        className="opacity-25"
-                        cx="12"
-                        cy="12"
-                        r="10"
-                        stroke="currentColor"
-                        strokeWidth="4"
-                        fill="none"
-                      />
-                      <path
-                        className="opacity-75"
-                        fill="currentColor"
-                        d="M4 12a8 8 0 0 1 8-8v4A4 4 0 0 0 8 12H4z"
-                      />
-                    </svg>
-                    <span>
-                      Generating ({chooser.format.toUpperCase()}) for Week{" "}
-                      {chooser.week}…
-                    </span>
+                  <div className="mt-3">
+                    <div className="text-xs text-slate-200">
+                      {progressMsg || `Generating (${chooser.format.toUpperCase()}) for Week ${chooser.week}…`}
+                    </div>
+
+                    <div className={styles.progressBarOuter}>
+                      <div className={styles.progressBarInner} />
+                    </div>
                   </div>
                 )}
               </div>
