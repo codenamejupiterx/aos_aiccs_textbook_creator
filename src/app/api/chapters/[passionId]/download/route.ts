@@ -1,12 +1,12 @@
 /* eslint-disable */
-// app/api/chapters/[passionId]/download/route.ts
+// src/app/api/chapters/[passionId]/week/download/route.ts
 export const runtime = "nodejs";
 
 import { NextResponse } from "next/server";
 import { auth } from "@/lib/auth";
 import { getItem } from "@/lib/dynamo";
-import { s3 } from "@/lib/s3"; // your S3 client
-import { GetObjectCommand } from "@aws-sdk/client-s3"; // SDK command
+import { s3 } from "@/lib/s3";
+import { GetObjectCommand } from "@aws-sdk/client-s3";
 import { Readable } from "stream";
 
 type Format = "pdf" | "docx" | "md" | "txt";
@@ -19,29 +19,43 @@ export async function GET(req: Request, { params }: { params: { passionId: strin
   }
   const email = session.user.email as string;
 
-  // ---- locate week 01 chapter ----
-  const item = await getItem(email, `CHAP#${params.passionId}#W01`);
-  if (!item?.s3Key) {
-    return NextResponse.json({ error: "Not found" }, { status: 404 });
-  }
+  const url = new URL(req.url);
 
-  // ---- fetch object from S3 (SDK command directly) ----
+  // ?week=01 (default 01)
+  const rawWeek = url.searchParams.get("week") || "01";
+  const wNum = rawWeek.replace(/^w/i, "");
+  const w = String(parseInt(wNum, 10) || 1).padStart(2, "0");
+  const weekNumberForName = parseInt(w, 10) || 1;
+
+  // ?format=pdf|docx|md|txt (default pdf)
+  const fmtRaw = (url.searchParams.get("format") || "pdf").toLowerCase();
+  const format: Format = (["pdf", "docx", "md", "txt"].includes(fmtRaw) ? fmtRaw : "pdf") as Format;
+
+  // optional: pass title for nicer filenames
+  const title = (url.searchParams.get("title") || "").trim();
+
+  // ---- fetch chapter text (assumes stored markdown/plain text) ----
+  const item = await getItem(email, `CHAP#${params.passionId}#W${w}`);
+  const s3Key = (item?.s3Key as string) || "";
+  if (!s3Key) return NextResponse.json({ error: "Not found" }, { status: 404 });
+
   const obj = await s3.send(
     new GetObjectCommand({
-      Bucket: process.env.S3_BUCKET!, // ensure set in .env
-      Key: item.s3Key,                // from Dynamo record
+      Bucket: process.env.S3_BUCKET!,
+      Key: s3Key,
     })
   );
 
   const buf = await streamToBuffer(obj.Body as any);
-  const md = buf.toString("utf8").trim(); // assume markdown/plain text source
+  const md = buf.toString("utf8").trim();
 
-  const url = new URL(req.url);
-  const format = ((url.searchParams.get("format") || "pdf").toLowerCase() as Format) || "pdf";
-  const filenameBase = `chapter-01-${params.passionId}`;
+  // ---- filename: chapter_1_sea_travel_via_soccer.pdf ----
+  const filenameBase = buildChapterFilenameBase(weekNumberForName, title);
+  const filename = `${filenameBase}.${format}`;
 
   try {
     if (format === "pdf") {
+      // If you already have your own md->pdf builder, swap this out.
       const { mdToPdf } = await import("md-to-pdf");
       const pdfResult: any = await mdToPdf({ content: md });
       const pdfBuffer: Buffer = pdfResult?.pdf || pdfResult?.content;
@@ -49,7 +63,7 @@ export async function GET(req: Request, { params }: { params: { passionId: strin
       return new Response(pdfBuffer as any, {
         headers: {
           "Content-Type": "application/pdf",
-          "Content-Disposition": `attachment; filename="${filenameBase}.pdf"`,
+          "Content-Disposition": `attachment; filename="${filename}"`,
           "Cache-Control": "private, max-age=0, no-store",
         },
       });
@@ -57,7 +71,12 @@ export async function GET(req: Request, { params }: { params: { passionId: strin
 
     if (format === "docx") {
       const { Document, Packer, Paragraph } = await import("docx");
-      const plain = md.replace(/^\s*#+\s+/gm, "").replace(/[*_`>]/g, "");
+
+      // simple markdown strip (good enough for now)
+      const plain = md
+        .replace(/^\s*#+\s+/gm, "")
+        .replace(/[*_`>]/g, "")
+        .trim();
 
       const doc = new Document({
         sections: [{ children: plain.split(/\n{2,}/).map((p) => new Paragraph(p)) }],
@@ -66,9 +85,8 @@ export async function GET(req: Request, { params }: { params: { passionId: strin
       const docBuf = await Packer.toBuffer(doc);
       return new Response(docBuf as any, {
         headers: {
-          "Content-Type":
-            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-          "Content-Disposition": `attachment; filename="${filenameBase}.docx"`,
+          "Content-Type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+          "Content-Disposition": `attachment; filename="${filename}"`,
           "Cache-Control": "private, max-age=0, no-store",
         },
       });
@@ -78,24 +96,36 @@ export async function GET(req: Request, { params }: { params: { passionId: strin
       return new Response(md, {
         headers: {
           "Content-Type": "text/markdown; charset=utf-8",
-          "Content-Disposition": `attachment; filename="${filenameBase}.md"`,
+          "Content-Disposition": `attachment; filename="${filename}"`,
           "Cache-Control": "private, max-age=0, no-store",
         },
       });
     }
 
-    // default: txt
+    // txt
     return new Response(md, {
       headers: {
         "Content-Type": "text/plain; charset=utf-8",
-        "Content-Disposition": `attachment; filename="${filenameBase}.txt"`,
+        "Content-Disposition": `attachment; filename="${filename}"`,
         "Cache-Control": "private, max-age=0, no-store",
       },
     });
   } catch (err) {
-    console.error("[download] error:", err);
+    console.error("[week/download] error:", err);
     return NextResponse.json({ error: "Conversion failed" }, { status: 500 });
   }
+}
+
+function buildChapterFilenameBase(week: number, title: string) {
+  // Option 3-style: chapter_1_sea_travel_via_soccer
+  const safeTitle = (title || "")
+    .toLowerCase()
+    .replace(/[^\w]+/g, "_")
+    .replace(/_+/g, "_")
+    .replace(/^_+|_+$/g, "");
+
+  if (safeTitle) return `chapter_${week}_${safeTitle}`;
+  return `chapter_${week}`;
 }
 
 /** Read an S3 Body (Buffer | Node Readable | Web ReadableStream) into Buffer */
@@ -123,7 +153,6 @@ async function streamToBuffer(body: any): Promise<Buffer> {
     return Buffer.concat(chunks.map((u) => Buffer.from(u)));
   }
 
-  // Already a Buffer/Uint8Array/String
   if (Buffer.isBuffer(body)) return body;
   if (body instanceof Uint8Array) return Buffer.from(body);
   if (typeof body === "string") return Buffer.from(body, "utf8");

@@ -20,7 +20,7 @@ import { generateDiagramImage } from "../lib/imageGen"; // 🔹 NEW
 
 import {
   DynamoDBClient,
-  ScanCommand,
+  QueryCommand,
   UpdateItemCommand,
   GetItemCommand,
   PutItemCommand,
@@ -35,6 +35,31 @@ const ddb = new DynamoDBClient({ region: REGION });
 
 const BUCKET = process.env.BUCKET || process.env.AWS_S3_BUCKET || "";
 const OPENAI_MODEL = process.env.OPENAI_MODEL || "gpt-5";
+
+/* ------------------------------------------------------------------ */
+/* Queue key helpers                                                   */
+/* ------------------------------------------------------------------ */
+
+type JobStatus = "pending" | "running" | "done" | "failed";
+
+function jobGsiPk(status: JobStatus) {
+  switch (status) {
+    case "pending":
+      return "JOB#PENDING";
+    case "running":
+      return "JOB#RUNNING";
+    case "done":
+      return "JOB#DONE";
+    case "failed":
+      return "JOB#FAILED";
+    default:
+      return "JOB#UNKNOWN";
+  }
+}
+
+function jobGsiSk(jobType: string, createdAtIso: string, jobId: string) {
+  return `${jobType}#${createdAtIso}#${jobId}`;
+}
 
 /* ------------------------------------------------------------------ */
 /* Helpers shared with /api/generate (local fallback curriculum/text) */
@@ -93,7 +118,7 @@ function buildLocalWeek1(
 }
 
 /* --------------------------------------------------------- */
-/* bgTestJob helpers (these handle the new background queue) */
+/* bgTestJob helpers (background queue for curriculum+week1)  */
 /* --------------------------------------------------------- */
 
 function parseBgInput(item: any): {
@@ -141,36 +166,135 @@ function parseBgInput(item: any): {
   };
 }
 
-async function findPendingBgTestJob() {
-  if (!TABLE) return null;
+function sleep(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
-  const out = await ddb.send(
-    new ScanCommand({
+const INDEX_NAME = process.env.JOBS_GSI1_NAME || "gsi1"; // ✅ your GSI name is "gsi1"
+
+type BgTestJob = {
+  userId: string;
+  entity: string; // "bgTestJob#<jobId>"
+  jobId: string;
+};
+
+type ChapterJob = {
+  userId: string;
+  entity: string; // "chapterJob#<jobId>"
+  jobId: string;
+};
+
+/**
+ * Claim one pending bgTestJob using the GSI
+ * We look for gsi1sk prefix "bgTestJob#"
+ */
+async function claimNextPendingBgTestJob(): Promise<BgTestJob | null> {
+  console.log("[chapterWorker] querying GSI for pending bgTest jobs...");
+
+  const q = await ddb.send(
+    new QueryCommand({
       TableName: TABLE,
+      IndexName: INDEX_NAME,
+      KeyConditionExpression:
+        "gsi1pk = :pk AND begins_with(gsi1sk, :skPrefix)",
+      ExpressionAttributeValues: {
+        ":pk": { S: jobGsiPk("pending") },   // "JOB#PENDING"
+        ":skPrefix": { S: "bgTestJob#" },    // <-- IMPORTANT
+      },
       Limit: 1,
-      FilterExpression: "#type = :t AND #status = :s",
+      ScanIndexForward: true,
+    })
+  );
+
+  const item = (q.Items ?? [])[0];
+  if (!item) {
+    // no bg jobs pending
+    return null;
+  }
+
+  const userId = item.userId?.S;
+  const entity = item.entity?.S;
+  const jobId = item.jobId?.S;
+
+  if (!userId || !entity || !jobId) {
+    console.warn("[chapterWorker] bgTest GSI item missing required fields:", item);
+    return null;
+  }
+
+  // claim atomically
+  try {
+    await ddb.send(
+      new UpdateItemCommand({
+        TableName: TABLE,
+        Key: { userId: { S: userId }, entity: { S: entity } },
+        UpdateExpression:
+          "SET #status = :running, gsi1pk = :gpk, #updatedAt = :now",
+        ConditionExpression: "#status = :pending AND gsi1pk = :pendingGsi",
+        ExpressionAttributeNames: {
+          "#status": "status",
+          "#updatedAt": "updatedAt",
+        },
+        ExpressionAttributeValues: {
+          ":pending": { S: "pending" },
+          ":running": { S: "running" },
+          ":pendingGsi": { S: jobGsiPk("pending") },
+          ":gpk": { S: jobGsiPk("running") },
+          ":now": { S: new Date().toISOString() },
+        },
+      })
+    );
+  } catch (err: any) {
+    console.warn(
+      "[chapterWorker] failed to claim bgTest job (race/already claimed):",
+      jobId,
+      err?.name
+    );
+    return null;
+  }
+
+  console.log("[chapterWorker] claimed bgTest job:", { jobId, userId });
+  return { userId, entity, jobId };
+}
+
+async function markBgTestFailed(job: BgTestJob, msg: string) {
+  await ddb.send(
+    new UpdateItemCommand({
+      TableName: TABLE,
+      Key: {
+        userId: { S: job.userId },
+        entity: { S: job.entity },
+      },
+      UpdateExpression:
+        "SET #status = :failed, gsi1pk = :gpk, #error = :msg, updatedAt = :now",
       ExpressionAttributeNames: {
-        "#type": "type",
         "#status": "status",
+        "#error": "errorMessage",
       },
       ExpressionAttributeValues: {
-        ":t": { S: "bgTestJob" },
-        ":s": { S: "pending" },
+        ":failed": { S: "failed" },
+        ":gpk": { S: jobGsiPk("failed") },
+        ":msg": { S: msg },
+        ":now": { S: new Date().toISOString() },
+      },
+    })
+  );
+}
+
+async function processBgTestJob(job: BgTestJob) {
+  // re-fetch the job row
+  const getRes = await ddb.send(
+    new GetItemCommand({
+      TableName: TABLE,
+      Key: {
+        userId: { S: job.userId },
+        entity: { S: job.entity },
       },
     })
   );
 
-  const item = out.Items && out.Items[0];
-  return item || null;
-}
-
-async function processBgTestJob(item: any) {
-  const email = item.userId?.S || "";
-  const jobId = item.jobId?.S || "";
-  if (!email || !jobId) {
-    console.warn("[bgTestJob] missing email or jobId, skipping");
-    return;
-  }
+  const item = getRes.Item || {};
+  const email = job.userId;
+  const jobId = job.jobId;
 
   const { subject, passion, ageRange, notes, passionLikes } = parseBgInput(item);
 
@@ -269,7 +393,7 @@ Teacher/learner notes: ${notes || "(none)"}
     const completion = await openai.chat.completions.create({
       model: OPENAI_MODEL,
       response_format: { type: "json_object" },
-      temperature: 0.4,
+      //temperature: 0.4,
       messages: [
         { role: "system", content: sys },
         { role: "user", content: userPrompt },
@@ -281,7 +405,27 @@ Teacher/learner notes: ${notes || "(none)"}
     curriculum16 = Array.isArray(parsedJSON?.curriculum16)
       ? parsedJSON.curriculum16
       : null;
-    week1Chapter = parsedJSON?.week1Chapter ?? null;
+
+    // NOTE: your schema produces week1Chapter object with sections, etc.
+    // Your fallback buildLocalWeek1 returns { title, body }.
+    // We normalize to { title, body } for writing.
+    const w1 = parsedJSON?.week1Chapter ?? null;
+    if (w1 && typeof w1 === "object") {
+      const title = String(w1.title ?? "Week 1");
+      const sections = Array.isArray(w1.sections) ? w1.sections : [];
+      const body = sections
+        .map((s: any) => {
+          const h = String(s?.heading ?? "").trim();
+          const b = String(s?.body ?? "").trim();
+          return h ? `## ${h}\n\n${b}` : b;
+        })
+        .filter(Boolean)
+        .join("\n\n");
+
+      week1Chapter = { title, body };
+    } else {
+      week1Chapter = null;
+    }
   } catch (e: any) {
     console.error("[bgTestJob] OpenAI error, using local fallback:", e);
     curriculum16 = buildLocalCurriculum(subject, passion, passionLikes);
@@ -289,134 +433,129 @@ Teacher/learner notes: ${notes || "(none)"}
   }
 
   if (!curriculum16 || !week1Chapter) {
-    throw new Error("Generation failed (OpenAI+fallback both empty)");
+    await markBgTestFailed(job, "Generation failed (OpenAI+fallback both empty)");
+    return;
   }
 
-  if (BUCKET) {
-    const curriculumText = JSON.stringify(curriculum16, null, 2);
-    const chapterText = `# ${week1Chapter.title || "Week 1"}\n\n${
-      week1Chapter.body || ""
-    }`;
+  try {
+    if (BUCKET) {
+      const curriculumText = JSON.stringify(curriculum16, null, 2);
+      const chapterText = `# ${week1Chapter.title || "Week 1"}\n\n${
+        week1Chapter.body || ""
+      }`;
 
-    await putText(BUCKET, keys.curriculum, curriculumText, "application/json");
-    await putText(
-      BUCKET,
-      keys.chapter,
-      chapterText,
-      "text/markdown; charset=utf-8"
-    );
-    await putText(
-      BUCKET,
-      keys.merged,
-      `Curriculum:\n${curriculumText}\n\n---\n\nChapter:\n${chapterText}`,
-      "text/plain; charset=utf-8"
-    );
-  } else {
-    console.warn("[bgTestJob] BUCKET not configured; skipping S3 writes");
-  }
+      await putText(BUCKET, keys.curriculum, curriculumText, "application/json");
+      await putText(
+        BUCKET,
+        keys.chapter,
+        chapterText,
+        "text/markdown; charset=utf-8"
+      );
+      await putText(
+        BUCKET,
+        keys.merged,
+        `Curriculum:\n${curriculumText}\n\n---\n\nChapter:\n${chapterText}`,
+        "text/plain; charset=utf-8"
+      );
+    } else {
+      console.warn("[bgTestJob] BUCKET not configured; skipping S3 writes");
+    }
 
-  // create the passion row (what /api/generate used to do)
-  await ddb.send(
-    new PutItemCommand({
-      TableName: TABLE,
-      Item: {
-        userId: { S: email },
-        entity: { S: entity },
-        type: { S: "passion" },
-        passionId: { S: passionId },
-        subject: { S: subject },
-        passion: { S: passion },
-        ageRange: { S: ageRange },
-        notes: { S: notes },
-        passionLikes: {
-          L: (passionLikes || []).map((p) => ({ S: String(p) })),
+    // create the passion row
+    await ddb.send(
+      new PutItemCommand({
+        TableName: TABLE,
+        Item: {
+          userId: { S: email },
+          entity: { S: entity },
+          type: { S: "passion" },
+          passionId: { S: passionId },
+          subject: { S: subject },
+          passion: { S: passion },
+          ageRange: { S: ageRange },
+          notes: { S: notes },
+          passionLikes: {
+            L: (passionLikes || []).map((p) => ({ S: String(p) })),
+          },
+          bucket: { S: BUCKET },
+          s3CurriculumKey: { S: keys.curriculum },
+          s3ChapterKey: { S: keys.chapter },
+          s3MergedKey: { S: keys.merged },
+          status: { S: "ready" },
+          createdAt: { S: nowIso },
+          updatedAt: { S: nowIso },
         },
-        bucket: { S: BUCKET },
-        s3CurriculumKey: { S: keys.curriculum },
-        s3ChapterKey: { S: keys.chapter },
-        s3MergedKey: { S: keys.merged },
-        status: { S: "ready" },
-        createdAt: { S: nowIso },
-        updatedAt: { S: nowIso },
-      },
-    })
-  );
+      })
+    );
 
-  // mark job as done + attach passionId
-  await ddb.send(
-    new UpdateItemCommand({
-      TableName: TABLE,
-      Key: {
-        userId: { S: email },
-        entity: { S: item.entity?.S || `bgTestJob#${jobId}` },
-      },
-      UpdateExpression:
-        "SET #status = :done, #updatedAt = :u, #passionId = :pid",
-      ExpressionAttributeNames: {
-        "#status": "status",
-        "#updatedAt": "updatedAt",
-        "#passionId": "passionId",
-      },
-      ExpressionAttributeValues: {
-        ":done": { S: "done" },
-        ":u": { S: new Date().toISOString() },
-        ":pid": { S: passionId },
-      },
-    })
-  );
+    // mark bgTest job as done + attach passionId + move queue key to DONE
+    await ddb.send(
+      new UpdateItemCommand({
+        TableName: TABLE,
+        Key: {
+          userId: { S: email },
+          entity: { S: job.entity },
+        },
+        UpdateExpression:
+          "SET #status = :done, gsi1pk = :gpk, #updatedAt = :u, #passionId = :pid",
+        ExpressionAttributeNames: {
+          "#status": "status",
+          "#updatedAt": "updatedAt",
+          "#passionId": "passionId",
+        },
+        ExpressionAttributeValues: {
+          ":done": { S: "done" },
+          ":gpk": { S: jobGsiPk("done") },
+          ":u": { S: new Date().toISOString() },
+          ":pid": { S: passionId },
+        },
+      })
+    );
 
-  console.log(
-    `[bgTestJob] finished job ${jobId}; created passion ${passionId} for ${email}`
-  );
+    console.log(
+      `[bgTestJob] finished job ${jobId}; created passion ${passionId} for ${email}`
+    );
+  } catch (e: any) {
+    console.error("[bgTestJob] FAILED finalization:", e);
+    await markBgTestFailed(job, (e?.message ?? String(e)).slice(0, 500));
+    return;
+  }
 }
 
 /* ----------------------------------------------- */
-/* Existing chapterJob flow (PDF/DOCX generation) */
+/* Existing chapterJob flow (PDF/DOCX generation)  */
 /* ----------------------------------------------- */
-
-type ChapterJob = {
-  userId: string;
-  entity: string; // "chapterJob#<jobId>"
-  jobId: string;
-};
-
-function sleep(ms: number) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
 
 async function claimNextPendingChapterJob(): Promise<ChapterJob | null> {
-  console.log("[chapterWorker] scanning for pending chapter jobs...");
+  console.log("[chapterWorker] querying GSI for pending chapter jobs...");
 
-  const scan = await ddb.send(
-    new ScanCommand({
+  const q = await ddb.send(
+    new QueryCommand({
       TableName: TABLE,
-      Limit: 25,
-      FilterExpression:
-        "begins_with(#entity, :prefix) AND #status = :pending",
-      ExpressionAttributeNames: {
-        "#entity": "entity",
-        "#status": "status",
-      },
+      IndexName: INDEX_NAME,
+      KeyConditionExpression:
+        "gsi1pk = :pk AND begins_with(gsi1sk, :skPrefix)",
       ExpressionAttributeValues: {
-        ":prefix": { S: "chapterJob#" },
-        ":pending": { S: "pending" },
+        ":pk": { S: jobGsiPk("pending") },
+        ":skPrefix": { S: "chapterJob#" }, // <-- ONLY chapter jobs now
       },
+      Limit: 1,
+      ScanIndexForward: true,
     })
   );
 
-  const item = (scan.Items ?? [])[0];
+  const item = (q.Items ?? [])[0];
   if (!item) {
-    console.log("[chapterWorker] no pending job found");
+    console.log("[chapterWorker] no pending job found via GSI");
     return null;
   }
 
   const userId = item.userId?.S;
   const entity = item.entity?.S;
-  const status = item.status?.S;
   const jobId = item.jobId?.S;
 
-  if (!userId || !entity || !jobId || status !== "pending") {
-    console.warn("[chapterWorker] item missing fields or not pending:", item);
+  if (!userId || !entity || !jobId) {
+    console.warn("[chapterWorker] GSI item missing required fields:", item);
     return null;
   }
 
@@ -424,12 +563,10 @@ async function claimNextPendingChapterJob(): Promise<ChapterJob | null> {
     await ddb.send(
       new UpdateItemCommand({
         TableName: TABLE,
-        Key: {
-          userId: { S: userId },
-          entity: { S: entity },
-        },
-        UpdateExpression: "SET #status = :running, #updatedAt = :now",
-        ConditionExpression: "#status = :pending",
+        Key: { userId: { S: userId }, entity: { S: entity } },
+        UpdateExpression:
+          "SET #status = :running, gsi1pk = :gpk, #updatedAt = :now",
+        ConditionExpression: "#status = :pending AND gsi1pk = :pendingGsi",
         ExpressionAttributeNames: {
           "#status": "status",
           "#updatedAt": "updatedAt",
@@ -437,6 +574,8 @@ async function claimNextPendingChapterJob(): Promise<ChapterJob | null> {
         ExpressionAttributeValues: {
           ":pending": { S: "pending" },
           ":running": { S: "running" },
+          ":pendingGsi": { S: jobGsiPk("pending") },
+          ":gpk": { S: jobGsiPk("running") },
           ":now": { S: new Date().toISOString() },
         },
       })
@@ -452,6 +591,30 @@ async function claimNextPendingChapterJob(): Promise<ChapterJob | null> {
 
   console.log("[chapterWorker] claimed job:", { jobId, userId });
   return { userId, entity, jobId };
+}
+
+async function markFailed(job: ChapterJob, msg: string) {
+  await ddb.send(
+    new UpdateItemCommand({
+      TableName: TABLE,
+      Key: {
+        userId: { S: job.userId },
+        entity: { S: job.entity },
+      },
+      UpdateExpression:
+        "SET #status = :failed, gsi1pk = :gpk, #error = :msg, updatedAt = :now",
+      ExpressionAttributeNames: {
+        "#status": "status",
+        "#error": "errorMessage",
+      },
+      ExpressionAttributeValues: {
+        ":failed": { S: "failed" },
+        ":gpk": { S: jobGsiPk("failed") },
+        ":msg": { S: msg },
+        ":now": { S: new Date().toISOString() },
+      },
+    })
+  );
 }
 
 async function processJob(job: ChapterJob) {
@@ -513,11 +676,9 @@ async function processJob(job: ChapterJob) {
     `chapter_week${weekNum}_${chapterTitle}`
   )}.${ext}`;
 
-  // --- build two image prompts for this chapter ---
   const figurePrompts: string[] = [
     `Educational illustration for ${subject}, Week ${weekNum}, using a ${passion} theme. ` +
       `Age range ${ageRange}. Simple, clear diagram with labels, no text paragraphs.`,
-
     `Second educational illustration for ${subject}, Week ${weekNum}, again in a ${passion} context. ` +
       `Show a different aspect of the concept. Clean, high-contrast graphic, no text paragraphs.`,
   ];
@@ -526,23 +687,14 @@ async function processJob(job: ChapterJob) {
 
   for (const prompt of figurePrompts) {
     try {
-      // use your existing OpenAI image helper
-      // eslint-disable-next-line no-await-in-loop
       const url = await generateDiagramImage(prompt);
       if (url) {
         figureImageUrls.push(url);
       } else {
-        console.warn(
-          "[chapterWorker] image helper returned empty URL for prompt:",
-          prompt
-        );
+        console.warn("[chapterWorker] image helper returned empty URL for prompt:", prompt);
       }
     } catch (err: any) {
-      console.error(
-        "[chapterWorker] figure generation failed:",
-        prompt,
-        err?.message || err
-      );
+      console.error("[chapterWorker] figure generation failed:", prompt, err?.message || err);
     }
   }
 
@@ -559,8 +711,6 @@ async function processJob(job: ChapterJob) {
     docxRawFlag,
     rawPdfFlag,
     userEmail: job.userId,
-
-    // 🔹 new: give the core exporter the prompt + URLs
     figurePrompts,
     figureImageUrls,
   };
@@ -578,7 +728,7 @@ async function processJob(job: ChapterJob) {
           entity: { S: job.entity },
         },
         UpdateExpression:
-          "SET #status = :done, #outputBucket = :bucket, #outputKey = :key, #filename = :fname, updatedAt = :now",
+          "SET #status = :done, gsi1pk = :gpk, #outputBucket = :bucket, #outputKey = :key, #filename = :fname, updatedAt = :now",
         ExpressionAttributeNames: {
           "#status": "status",
           "#outputBucket": "outputBucket",
@@ -587,6 +737,7 @@ async function processJob(job: ChapterJob) {
         },
         ExpressionAttributeValues: {
           ":done": { S: "done" },
+          ":gpk": { S: jobGsiPk("done") },
           ":bucket": { S: bucket },
           ":key": { S: key },
           ":fname": { S: `${baseName}.${ext}` },
@@ -595,39 +746,11 @@ async function processJob(job: ChapterJob) {
       })
     );
 
-    console.log(
-      "[chapterWorker] job DONE:",
-      job.jobId,
-      "->",
-      `${bucket}/${key}`
-    );
+    console.log("[chapterWorker] job DONE:", job.jobId, "->", `${bucket}/${key}`);
   } catch (err: any) {
     console.error("[chapterWorker] job FAILED:", job.jobId, err);
     await markFailed(job, (err?.message ?? String(err)).slice(0, 500));
   }
-}
-
-async function markFailed(job: ChapterJob, msg: string) {
-  await ddb.send(
-    new UpdateItemCommand({
-      TableName: TABLE,
-      Key: {
-        userId: { S: job.userId },
-        entity: { S: job.entity },
-      },
-      UpdateExpression:
-        "SET #status = :failed, #error = :msg, updatedAt = :now",
-      ExpressionAttributeNames: {
-        "#status": "status",
-        "#error": "errorMessage",
-      },
-      ExpressionAttributeValues: {
-        ":failed": { S: "failed" },
-        ":msg": { S: msg },
-        ":now": { S: new Date().toISOString() },
-      },
-    })
-  );
 }
 
 /* --------------------- */
@@ -638,22 +761,19 @@ async function main() {
   console.log("[chapterWorker] starting chapter worker loop...");
   while (true) {
     try {
-      // 1) bgTestJob (curriculum + Week 1) takes priority
-      const bgJob = await findPendingBgTestJob();
+      // 1) bgTestJob takes priority (now via GSI, no Scan)
+      const bgJob = await claimNextPendingBgTestJob();
       if (bgJob) {
-        console.log(
-          "[chapterWorker] found pending bgTestJob:",
-          bgJob.jobId?.S || bgJob.entity?.S
-        );
         try {
           await processBgTestJob(bgJob);
         } catch (e: any) {
           console.error("[chapterWorker] bgTestJob FAILED:", e);
+          await markBgTestFailed(bgJob, (e?.message ?? String(e)).slice(0, 500));
         }
-        continue; // then check again
+        continue;
       }
 
-      // 2) Fall back to existing chapterJob flow
+      // 2) chapterJob flow
       const job = await claimNextPendingChapterJob();
       if (!job) {
         await sleep(5000);

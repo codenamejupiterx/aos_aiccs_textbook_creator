@@ -13,9 +13,12 @@ import fontkit from "@pdf-lib/fontkit";
 import { Document, Paragraph, Packer } from "docx";
 
 
+
 // NOTE: This file must stay “core only” – no NextResponse, no Dynamo, no routes.
 
 export type ExportFormat = "pdf" | "docx" | "md" | "html";
+
+
 
 export type ChapterJobInput = {
   subject: string;
@@ -60,6 +63,8 @@ export function sanitizeFilename(name: string) {
     .replace(/\s+/g, "_")
     .slice(0, 80);
 }
+
+
 
 // Add near top of chapterExportCore.ts
 function appendFiguresMarkdown(
@@ -200,10 +205,24 @@ async function buildPdfBufferPlainText(title: string, text: string) {
 
 // 🔥 NEW IMPLEMENTATION (replaces old one)
 // uses puppeteer-core + CHROME_PATH + safer waitUntil/timeout
+// Pick Chrome path based on env + platform
+function getChromeExecutablePath() {
+  // allow override (best for local dev + prod)
+  if (process.env.CHROME_EXECUTABLE_PATH) return process.env.CHROME_EXECUTABLE_PATH;
+
+  // macOS (common local dev path)
+  if (process.platform === "darwin") {
+    return "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
+  }
+
+  // linux (containers / App Runner)
+  return "/usr/bin/chromium";
+}
+
 async function buildPdfBufferFromHtml(html: string): Promise<Uint8Array> {
   const browser = await puppeteer.launch({
-    executablePath: CHROME_PATH,
-    headless: true, // ✅ use boolean instead of "new"
+    executablePath: getChromeExecutablePath(),
+    headless: true, // ✅ boolean
     args: [
       "--no-sandbox",
       "--disable-setuid-sandbox",
@@ -222,15 +241,12 @@ async function buildPdfBufferFromHtml(html: string): Promise<Uint8Array> {
     // Optional: block most network requests – HTML is already local
     await page.setRequestInterception(true);
     page.on("request", (req) => {
-      if (req.resourceType() === "document") {
-        req.continue();
-      } else {
-        req.abort();
-      }
+      if (req.resourceType() === "document") req.continue();
+      else req.abort();
     });
 
     await page.setContent(html, {
-      waitUntil: "domcontentloaded", // 👈 avoids networkidle hang
+      waitUntil: "domcontentloaded", // 👈 avoids networkidle hangs
       timeout: 120_000,
     });
 
@@ -245,14 +261,12 @@ async function buildPdfBufferFromHtml(html: string): Promise<Uint8Array> {
       },
     });
 
-    // make sure we always return Uint8Array like the rest of the file expects
-    return pdfBuffer instanceof Uint8Array
-      ? pdfBuffer
-      : new Uint8Array(pdfBuffer);
+    return pdfBuffer instanceof Uint8Array ? pdfBuffer : new Uint8Array(pdfBuffer);
   } finally {
     await browser.close();
   }
 }
+
 
 // ---------- markdown -> HTML ----------
 function mdToHtml(

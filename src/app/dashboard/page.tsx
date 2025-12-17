@@ -252,6 +252,52 @@ function getNextAuthCsrfTokenOnly(): string {
 //   }
 // }
 
+async function pollBgJobForPassionId(jobId: string) {
+  const started = Date.now();
+  const timeoutMs = 100_000; // 3min
+  const intervalMs = 1200;
+
+  while (Date.now() - started < timeoutMs) {
+    const res = await fetch(`/api/bg-test/status/${encodeURIComponent(jobId)}`, {
+      cache: "no-store",
+      credentials: "same-origin",
+    });
+
+    if (!res.ok) {
+      const txt = await res.text();
+      throw new Error(`Status check failed ${res.status}: ${txt.slice(0, 200)}`);
+    }
+
+    const data = await res.json();
+
+    // ✅ handle real failure state
+    if (data?.status === "failed") {
+      throw new Error(data?.error || "Background job failed.");
+    }
+
+    // (keep this too, just in case your status route uses it)
+    if (data?.status === "error") {
+      throw new Error(data?.error || "Background job failed.");
+    }
+
+    // ✅ if done and passionId exists, return it
+    if (data?.status === "done" && data?.passionId) {
+      return String(data.passionId);
+    }
+
+    // ✅ if done but passionId missing, STOP polling (don’t spin forever)
+    if (data?.status === "done" && !data?.passionId) {
+      return null;
+    }
+
+    await new Promise((r) => setTimeout(r, intervalMs));
+  }
+
+  throw new Error("Timed out waiting for background job to finish.");
+}
+
+
+
 
 async function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
   e.preventDefault();
@@ -265,17 +311,17 @@ async function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
       passion: passion.trim(),
       ageRange: ageRange.trim(),
       notes: notes.trim(),
-      passionLikes, // already an array of strings
+      passionLikes,
     };
 
-    // --- CSRF handling (same pattern you already use) ---
+    // --- CSRF handling ---
     let csrf = getAnyCsrfTokenLeftSide();
     if (!csrf) {
-      await ensureCsrf();                 // hits /api/csrf
-      csrf = getAnyCsrfTokenLeftSide();   // re-read after cookie is set
+      await ensureCsrf();
+      csrf = getAnyCsrfTokenLeftSide();
     }
 
-    const res = await fetch("/api/bg-test/enqueue", {
+    const res = await fetch("/api/bg-test", {
       method: "POST",
       credentials: "same-origin",
       headers: {
@@ -285,47 +331,54 @@ async function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
       body: JSON.stringify(payload),
     });
 
-    if (res.status === 401) {
-      throw new Error("You must be signed in.");
-    }
-    if (!res.ok) {
-      throw new Error(
-        `Server error ${res.status}: ${(await res.text()).slice(0, 200)}`
-      );
+    let data: any = null;
+    try {
+      data = await res.json();
+    } catch {
+      // ignore
     }
 
-    const data = (await res.json()) as {
-      ok: boolean;
-      passionId?: string;
-    };
-
-    if (!data.ok || !data.passionId) {
-      throw new Error("Unexpected response from server.");
+    if (res.status === 401) throw new Error("You must be signed in.");
+    if (!res.ok || !data?.ok) {
+      throw new Error(data?.error || `Server error ${res.status}`);
     }
 
-    // 🔁 pull fresh passions so the slideout includes the new one
+    // ✅ If API returns passionId immediately (fast path)
+    let passionId: string | null = data?.passionId ? String(data.passionId) : null;
+
+    // ✅ Otherwise, use queued jobId and poll
+    if (!passionId) {
+      const jobId = data?.jobId ? String(data.jobId) : "";
+      if (!jobId) {
+        console.log("bg-test response:", data);
+        throw new Error("Unexpected response from server (missing passionId/jobId).");
+      }
+      passionId = await pollBgJobForPassionId(jobId);
+    }
+
     await loadPassions();
 
-    // store passionId so the success modal can show ID
-    setSuccessId(data.passionId);
-    // (optional) pre-set highlight so it auto-scrolls in PassionsPanel
-    setHighlightId(data.passionId);
+    if (passionId) {
+      setHighlightId(passionId);
+      setSuccessId(passionId);
+    } else {
+      setSuccessId("ready");
+    }
+    setPanelOpen(true);
 
-    // clear the form
+    // ✅ clear form
     setAgeRange("");
     setSubject("");
     setPassion("");
     setNotes("");
     setPassionLikes([]);
   } catch (err: any) {
-    console.error("bg-test enqueue failed:", err);
+    console.error("bg-test failed:", err);
     setErrorMsg(err?.message || "Failed to submit request.");
   } finally {
     setLoading(false);
   }
 }
-
-
 
 
 
@@ -492,34 +545,37 @@ async function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
 
             <div className="mt-5 flex gap-3">
               <button
-                onClick={async () => {
-                  if (!successId) {
-                    setSuccessId(null);
-                    return;
+                onClick={async () => 
+                  {
+                    if (!successId) {
+                      setSuccessId(null);
+                      return;
+                    }
+
+                    try {
+                      await loadPassions();
+                      setPanelOpen(true);
+
+                      // highlight only if successId is a real passionId
+                      if (successId !== "ready") {
+                        setHighlightId(successId);
+                      }
+
+                      // clear form + close modal
+                      setAgeRange("");
+                      setSubject("");
+                      setPassion("");
+                      setNotes("");
+                      setPassionLikes([]);
+                      setSuccessId(null);
+                    } catch (e) {
+                      console.error("open mini-chapters error:", e);
+                      setErrorMsg("Something went wrong opening your mini-chapters.");
+                      setSuccessId(null);
+                    }
                   }
-
-                  try {
-                    // No more /api/bg-test/promote — worker already created the passion row
-                    await loadPassions();
-                    setPanelOpen(true);
-
-                    // If successId is actually a jobId and not a passionId, skip highlight.
-                    // For now, just open the panel; user can see the newest item at the top.
-                    // setHighlightId(successId); // enable later if successId becomes passionId
-
-                    // Clear form + modal
-                    setAgeRange("");
-                    setSubject("");
-                    setPassion("");
-                    setNotes("");
-                    setPassionLikes([]);
-                    setSuccessId(null);
-                  } catch (e) {
-                    console.error("open mini-chapters error:", e);
-                    setErrorMsg("Something went wrong opening your mini-chapters.");
-                    setSuccessId(null);
-                  }
-                }}
+                }
+                
                 className="flex-1 rounded-lg bg-emerald-600 px-4 py-2 text-white shadow hover:shadow-md"
               >
 

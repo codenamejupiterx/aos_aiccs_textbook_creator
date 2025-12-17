@@ -545,7 +545,9 @@ export default function PassionsPanel({
               <div className="px-5 py-4 border-b border-white/10">
                 <h3 className="text-lg font-semibold">Pick your format</h3>
                 <p className="mt-1 text-sm text-slate-300">
-                  Choose a file type for Week {chooser.week}.
+                  {chooser.busy
+                    ? (progressMsg || `Generating Week ${chooser.week}… hang tight.`)
+                    : `Choose a file type for Week ${chooser.week}.`}
                 </p>
 
                 {chooser.busy && (

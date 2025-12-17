@@ -16,17 +16,25 @@ export const TABLE =
 
 // Low-level client + DocumentClient (marshals JS objects automatically)
 const client = new DynamoDBClient({ region: REGION, endpoint: ENDPOINT });
-export const ddb = DynamoDBDocumentClient.from(client);
+
+// ✅ Merge-in: removeUndefinedValues like marshall(..., { removeUndefinedValues: true })
+export const ddb = DynamoDBDocumentClient.from(client, {
+  marshallOptions: {
+    removeUndefinedValues: true,
+    convertEmptyValues: false,
+  },
+});
 
 /** Basic puts/gets --------------------------------------------------------- */
 export async function putItem(item: Record<string, any>) {
+  // DocumentClient will store ALL fields you pass in (including gsi1pk/gsi1sk)
   await ddb.send(new PutCommand({ TableName: TABLE, Item: item }));
 }
 
 /**
  * Get by actual table keys. Matches your schema:
  *   PK: userId (string, plain email, e.g. "benjaforge@gmail.com")
- *   SK: entity (string, e.g. "passion#<uuid>" or "chapterJob#<uuid>")
+ *   SK: entity (string, e.g. "passion#<uuid>" or "bgTestJob#<uuid>")
  */
 export async function getItem(userId: string, entity: string) {
   const res = await ddb.send(
@@ -161,10 +169,7 @@ export async function updateItem(args: {
     i++;
   }
 
-  if (!sets.length) {
-    // nothing to update
-    return;
-  }
+  if (!sets.length) return;
 
   await ddb.send(
     new UpdateCommand({
