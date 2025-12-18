@@ -1,6 +1,7 @@
 // src/worker/chapterWorker.ts
 /* eslint-disable */
-console.log("[chapterWorker] BUILD MARKER 2025-11-21-0530");
+console.log("[chapterWorker] BUILD MARKER 2025-12-17-xxxx");
+
 
 import dotenv from "dotenv";
 dotenv.config({ path: ".env.local" });
