@@ -15,7 +15,7 @@ export async function generateDiagramImage(desc: string): Promise<string> {
   const prompt = desc?.trim();
   if (!prompt) return "";
 
-  const model = process.env.OPENAI_IMAGE_MODEL || "dall-e-3";
+  const model = "gpt-image-1";
 
   try {
     const resp = await fetch("https://api.openai.com/v1/images/generations", {
